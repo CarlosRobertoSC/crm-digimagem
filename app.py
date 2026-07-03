@@ -19,6 +19,8 @@ import sqlite3
 import os
 import uuid
 import json
+import urllib.request
+import urllib.error
 from datetime import datetime, timedelta, timezone, date
 from functools import wraps
 
@@ -619,6 +621,81 @@ def delete_customer(customer_id):
     audit("delete", "customers", customer_id, {"nome": existing["nome"]})
     db.commit()
     return jsonify({"ok": True})
+
+
+# ------------------------------------------------------------------
+# Rotas — Consulta externa de CNPJ e CEP (preenchimento automático)
+# Usa BrasilAPI (dados da Receita Federal) e ViaCEP — ambas gratuitas,
+# públicas e sem necessidade de chave de API. Nenhum custo envolvido.
+# ------------------------------------------------------------------
+def _http_get_json(url, timeout=6):
+    """GET simples usando só a biblioteca padrão do Python (sem dependência
+    nova). Levanta urllib.error.HTTPError em respostas 4xx/5xx."""
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "CRM-Digimagem/1.0 (contato@lojadigimagem.com.br)",
+        "Accept": "application/json",
+    })
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+@app.get("/api/lookup/cnpj/<cnpj>")
+@login_required
+def lookup_cnpj(cnpj):
+    digitos = "".join(c for c in cnpj if c.isdigit())
+    if len(digitos) != 14:
+        return jsonify({"error": "CNPJ precisa ter 14 dígitos."}), 400
+    try:
+        dados = _http_get_json(f"https://brasilapi.com.br/api/cnpj/v1/{digitos}")
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return jsonify({"error": "CNPJ não encontrado na Receita Federal."}), 404
+        return jsonify({"error": "Não foi possível consultar o CNPJ agora. Tente novamente ou preencha manualmente."}), 502
+    except Exception:
+        return jsonify({"error": "Não foi possível consultar o CNPJ agora. Tente novamente ou preencha manualmente."}), 502
+
+    endereco_partes = [dados.get("logradouro"), dados.get("numero")]
+    if dados.get("complemento"):
+        endereco_partes.append(dados["complemento"])
+    endereco = ", ".join(p for p in endereco_partes if p) or None
+
+    telefone = dados.get("ddd_telefone_1") or ""
+
+    return jsonify({
+        "nome": dados.get("nome_fantasia") or dados.get("razao_social"),
+        "razao_social": dados.get("razao_social"),
+        "endereco": endereco,
+        "bairro": dados.get("bairro"),
+        "cep": dados.get("cep"),
+        "cidade": dados.get("municipio"),
+        "estado": dados.get("uf"),
+        "telefone": telefone,
+        "situacao_cadastral": dados.get("descricao_situacao_cadastral"),
+    })
+
+
+@app.get("/api/lookup/cep/<cep>")
+@login_required
+def lookup_cep(cep):
+    digitos = "".join(c for c in cep if c.isdigit())
+    if len(digitos) != 8:
+        return jsonify({"error": "CEP precisa ter 8 dígitos."}), 400
+    try:
+        dados = _http_get_json(f"https://viacep.com.br/ws/{digitos}/json/")
+    except Exception:
+        return jsonify({"error": "Não foi possível consultar o CEP agora. Tente novamente ou preencha manualmente."}), 502
+
+    if dados.get("erro"):
+        return jsonify({"error": "CEP não encontrado."}), 404
+
+    endereco_partes = [dados.get("logradouro"), dados.get("bairro")]
+    endereco = ", ".join(p for p in endereco_partes if p) or None
+
+    return jsonify({
+        "endereco": endereco,
+        "cidade": dados.get("localidade"),
+        "estado": dados.get("uf"),
+    })
 
 
 # ------------------------------------------------------------------

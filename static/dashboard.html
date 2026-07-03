@@ -1824,6 +1824,68 @@ let ACTIVE_MODAL = null;
 
 const ADMIN_ONLY_MODALS = ["usuario", "editar_usuario", "delegada"];
 
+// ------------------------------------------------------------------
+// Busca automática de CNPJ (Receita Federal via BrasilAPI) e CEP (ViaCEP)
+// Gratuito, sem chave de API — dispara quando o usuário termina de digitar.
+// ------------------------------------------------------------------
+function wireAutoLookupFields() {
+  const cnpjEl = document.getElementById("modal_cpf_cnpj");
+  const cepEl = document.getElementById("modal_cep");
+  if (cnpjEl) {
+    addFieldHint(cnpjEl);
+    cnpjEl.addEventListener("blur", () => autoLookupCnpj(cnpjEl));
+  }
+  if (cepEl) {
+    addFieldHint(cepEl);
+    cepEl.addEventListener("blur", () => autoLookupCep(cepEl));
+  }
+}
+
+function addFieldHint(el) {
+  if (el.parentElement.querySelector(".field-hint")) return;
+  const hint = document.createElement("div");
+  hint.className = "field-hint";
+  hint.style.cssText = "font-size:11px;margin-top:5px;min-height:13px;";
+  el.parentElement.appendChild(hint);
+}
+
+function setFieldHint(el, text, color) {
+  const hint = el.parentElement.querySelector(".field-hint");
+  if (hint) { hint.textContent = text; hint.style.color = color || "var(--text-muted)"; }
+}
+
+async function autoLookupCnpj(el) {
+  const digitos = el.value.replace(/\D/g, "");
+  if (digitos.length !== 14) { setFieldHint(el, "", ""); return; }
+  setFieldHint(el, "Buscando dados na Receita Federal…", "var(--signal)");
+  try {
+    const dados = await api(`/lookup/cnpj/${digitos}`);
+    const mapa = { nome: "nome", endereco: "endereco", cep: "cep", cidade: "cidade", estado: "estado", telefone: "telefone" };
+    Object.entries(mapa).forEach(([campoApi, campoForm]) => {
+      const alvo = document.getElementById(`modal_${campoForm}`);
+      if (alvo && dados[campoApi]) alvo.value = dados[campoApi];
+    });
+    setFieldHint(el, `✓ ${dados.razao_social || "Dados preenchidos automaticamente"}`, "var(--ok)");
+  } catch (err) {
+    setFieldHint(el, err.message || "CNPJ não encontrado — preencha manualmente.", "var(--urgent)");
+  }
+}
+
+async function autoLookupCep(el) {
+  const digitos = el.value.replace(/\D/g, "");
+  if (digitos.length !== 8) { setFieldHint(el, "", ""); return; }
+  setFieldHint(el, "Buscando endereço…", "var(--signal)");
+  try {
+    const dados = await api(`/lookup/cep/${digitos}`);
+    if (dados.endereco) { const e = document.getElementById("modal_endereco"); if (e) e.value = dados.endereco; }
+    if (dados.cidade) { const c = document.getElementById("modal_cidade"); if (c) c.value = dados.cidade; }
+    if (dados.estado) { const s = document.getElementById("modal_estado"); if (s) s.value = dados.estado; }
+    setFieldHint(el, "✓ Endereço encontrado", "var(--ok)");
+  } catch (err) {
+    setFieldHint(el, err.message || "CEP não encontrado — preencha manualmente.", "var(--urgent)");
+  }
+}
+
 async function openModal(kind) {
   if (ADMIN_ONLY_MODALS.includes(kind) && CURRENT_USER.role !== "admin") {
     return; // ação restrita ao administrador — não deveria nem ser alcançável pela UI
@@ -1885,6 +1947,11 @@ async function openModal(kind) {
         el.value = valoresAtuais[f.name];
       }
     });
+  }
+
+  // busca automática de dados por CNPJ/CEP — só nos modais de cliente
+  if (kind === "cliente" || kind === "editar_cliente") {
+    wireAutoLookupFields();
   }
 
   document.getElementById("modalOverlay").classList.add("open");

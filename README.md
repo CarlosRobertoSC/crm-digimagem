@@ -86,6 +86,19 @@ rota `/api/users` (só admin) e desativar os de exemplo.
   - view **Notificações WhatsApp**: cadastro do(s) número(s) que recebem os alertas
     (canal de envio apenas — o sistema não lê conversas).
 
+## 🔍 Busca automática de CNPJ e CEP (gratuito, sem chave de API)
+
+Ao cadastrar ou editar um cliente, digitar o **CNPJ** e sair do campo já busca
+automaticamente razão social/nome fantasia, endereço, cidade, estado e telefone
+direto na Receita Federal (via [BrasilAPI](https://brasilapi.com.br), pública e
+gratuita). Digitar o **CEP** e sair do campo busca o endereço via
+[ViaCEP](https://viacep.com.br) (também pública e gratuita). Nenhuma das duas
+exige cadastro, chave de API ou tem qualquer custo.
+
+Se a consulta falhar (CNPJ/CEP não encontrado, ou os serviços externos fora do
+ar), aparece um aviso discreto embaixo do campo e você preenche manualmente —
+nada trava o cadastro.
+
 ## ✦ Assistente de Vendas (IA local — 100% gratuito, sem API paga)
 
 Existe uma view "Assistente de Vendas" no menu lateral. Ela roda um **motor de regras
