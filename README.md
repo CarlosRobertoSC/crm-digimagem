@@ -30,8 +30,9 @@ o alerta de "compromisso esquecido" nascer sozinho).
 |---|---|---|
 | Admin Master 1 | admin1@digimagem.com | admin123 |
 | Admin Master 2 | admin2@digimagem.com | admin123 |
-| Vendedora | marina@digimagem.com | venda123 |
-| Vendedor | carlos@digimagem.com | venda123 |
+| Vendedor | carlos.vendas@lojadigimagem.com.br | vendas123 |
+| Vendedora | ana@lojadigimagem.com.br | vendas123 |
+| Vendedor | tiago@lojadigimagem.com.br | vendas123 |
 
 Troque essas senhas antes de usar com dados reais — é só criar novos usuários pela
 rota `/api/users` (só admin) e desativar os de exemplo.

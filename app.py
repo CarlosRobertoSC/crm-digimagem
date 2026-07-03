@@ -10,8 +10,9 @@ Depois abra http://localhost:5000
 Login de teste (criados no seed):
     admin1@digimagem.com   / admin123     (Admin Master 1)
     admin2@digimagem.com   / admin123     (Admin Master 2)
-    marina@digimagem.com   / venda123     (Vendedora)
-    carlos@digimagem.com   / venda123     (Vendedor)
+    carlos.vendas@lojadigimagem.com.br / vendas123   (Vendedor)
+    ana@lojadigimagem.com.br           / vendas123   (Vendedora)
+    tiago@lojadigimagem.com.br         / vendas123   (Vendedor)
 """
 
 import sqlite3
@@ -1505,16 +1506,18 @@ def seed(conn):
         return uuid.uuid4().hex
 
     admin1, admin2 = uid(), uid()
-    marina, carlos = uid(), uid()
+    carlos_vendas, ana, tiago = uid(), uid(), uid()
 
     conn.execute("INSERT INTO users (id, nome, email, senha_hash, role) VALUES (?,?,?,?,?)",
                  (admin1, "Admin Master 1", "admin1@digimagem.com", generate_password_hash("admin123"), "admin"))
     conn.execute("INSERT INTO users (id, nome, email, senha_hash, role) VALUES (?,?,?,?,?)",
                  (admin2, "Admin Master 2", "admin2@digimagem.com", generate_password_hash("admin123"), "admin"))
     conn.execute("INSERT INTO users (id, nome, email, senha_hash, role) VALUES (?,?,?,?,?)",
-                 (marina, "Marina Costa", "marina@digimagem.com", generate_password_hash("venda123"), "vendedor"))
+                 (carlos_vendas, "Carlos", "carlos.vendas@lojadigimagem.com.br", generate_password_hash("vendas123"), "vendedor"))
     conn.execute("INSERT INTO users (id, nome, email, senha_hash, role) VALUES (?,?,?,?,?)",
-                 (carlos, "Carlos Nogueira", "carlos@digimagem.com", generate_password_hash("venda123"), "vendedor"))
+                 (ana, "Ana", "ana@lojadigimagem.com.br", generate_password_hash("vendas123"), "vendedor"))
+    conn.execute("INSERT INTO users (id, nome, email, senha_hash, role) VALUES (?,?,?,?,?)",
+                 (tiago, "Tiago", "tiago@lojadigimagem.com.br", generate_password_hash("vendas123"), "vendedor"))
 
     def add_customer(nome, whatsapp, status, dias_sem_comprar, responsavel, origem="Indicações"):
         cid = uid()
@@ -1525,14 +1528,14 @@ def seed(conn):
         """, (cid, nome, whatsapp, data_compra, status, responsavel, origem))
         return cid
 
-    joao = add_customer("João Pereira", "5548999990001", "vip", 18, marina, "Indicações")
-    studio_nova = add_customer("Studio Nova", "5548999990002", "recorrente", 46, marina, "LinkedIn")
-    bruno = add_customer("Bruno Lima", "5548999990003", "novo", None, marina, "Inbound")
-    fernanda = add_customer("Fernanda Dias", "5548999990004", "novo", None, carlos, "Outbound")
-    atelie = add_customer("Ateliê Prime", "5548999990005", "vip", 5, carlos, "Eventos")
-    ricardo = add_customer("Ricardo Alves", "5548999990006", "novo", None, carlos, "LinkedIn")
-    perdida1 = add_customer("Contatos Perdidos ME", "5548999990007", "perdido", None, marina, "Outbound")
-    ganha1 = add_customer("Foto Prime Estúdio", "5548999990008", "recorrente", None, carlos, "Indicações")
+    joao = add_customer("João Pereira", "5548999990001", "vip", 18, carlos_vendas, "Indicações")
+    studio_nova = add_customer("Studio Nova", "5548999990002", "recorrente", 46, ana, "LinkedIn")
+    bruno = add_customer("Bruno Lima", "5548999990003", "novo", None, carlos_vendas, "Inbound")
+    fernanda = add_customer("Fernanda Dias", "5548999990004", "novo", None, ana, "Outbound")
+    atelie = add_customer("Ateliê Prime", "5548999990005", "vip", 5, tiago, "Eventos")
+    ricardo = add_customer("Ricardo Alves", "5548999990006", "novo", None, tiago, "LinkedIn")
+    perdida1 = add_customer("Contatos Perdidos ME", "5548999990007", "perdido", None, carlos_vendas, "Outbound")
+    ganha1 = add_customer("Foto Prime Estúdio", "5548999990008", "recorrente", None, tiago, "Indicações")
 
     def add_deal(customer_id, user_id, titulo, etapa, valor, horas_parado=0, status="aberto",
                  motivo_perda=None, dias_previsao=None, dias_atras_fechamento=None):
@@ -1561,37 +1564,37 @@ def seed(conn):
             """, (uid(), did, "novo_lead", etapa, user_id, etapa_ts))
         return did
 
-    deal_joao = add_deal(joao, marina, "Ensaio corporativo — João Pereira", "qualificacao", 7400, horas_parado=52, dias_previsao=10)
-    add_deal(bruno, marina, "Pacote casamento — Bruno Lima", "proposta_enviada", 6200, horas_parado=61, dias_previsao=5)
-    add_deal(studio_nova, marina, "Contrato mensal — Studio Nova", "negociacao", 12000, horas_parado=10, dias_previsao=15)
-    add_deal(fernanda, carlos, "Book individual — Fernanda Dias", "novo_lead", 3200, horas_parado=6)
-    add_deal(atelie, carlos, "Catálogo produtos — Ateliê Prime", "negociacao", 18500, horas_parado=20, dias_previsao=8)
-    add_deal(ricardo, carlos, "Ensaio família — Ricardo Alves", "novo_lead", 5900, horas_parado=2)
+    deal_joao = add_deal(joao, carlos_vendas, "Ensaio corporativo — João Pereira", "qualificacao", 7400, horas_parado=52, dias_previsao=10)
+    add_deal(bruno, carlos_vendas, "Pacote casamento — Bruno Lima", "proposta_enviada", 6200, horas_parado=61, dias_previsao=5)
+    add_deal(studio_nova, ana, "Contrato mensal — Studio Nova", "negociacao", 12000, horas_parado=10, dias_previsao=15)
+    add_deal(fernanda, ana, "Book individual — Fernanda Dias", "novo_lead", 3200, horas_parado=6)
+    add_deal(atelie, tiago, "Catálogo produtos — Ateliê Prime", "negociacao", 18500, horas_parado=20, dias_previsao=8)
+    add_deal(ricardo, tiago, "Ensaio família — Ricardo Alves", "novo_lead", 5900, horas_parado=2)
     # Negócios já fechados, pra alimentar os relatórios de Desempenho, Motivos de Perda e Origem de Leads
-    add_deal(perdida1, marina, "Cobertura evento — Contatos Perdidos ME", "fechado_perdido", 4500,
+    add_deal(perdida1, carlos_vendas, "Cobertura evento — Contatos Perdidos ME", "fechado_perdido", 4500,
               status="perdido", motivo_perda="preco", dias_atras_fechamento=6)
-    add_deal(ganha1, carlos, "Ensaio produtos — Foto Prime Estúdio", "fechado_ganho", 8900,
+    add_deal(ganha1, tiago, "Ensaio produtos — Foto Prime Estúdio", "fechado_ganho", 8900,
               status="ganho", dias_atras_fechamento=3)
 
     # task vencida (compromisso esquecido) ligada ao João Pereira
     conn.execute("""
         INSERT INTO tasks (id, deal_id, customer_id, user_id, descricao, tipo_atividade, data_lembrete, executado)
         VALUES (?,?,?,?,?,'follow_up',?,0)
-    """, (uid(), deal_joao, joao, marina, 'Retornar contato — "te ligo na terça"',
+    """, (uid(), deal_joao, joao, carlos_vendas, 'Retornar contato — "te ligo na terça"',
           (datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=2)).strftime("%Y-%m-%d %H:%M:%S")))
 
     # task futura, ainda não vencida
     conn.execute("""
         INSERT INTO tasks (id, deal_id, customer_id, user_id, descricao, tipo_atividade, data_lembrete, executado)
         VALUES (?,?,?,?,?,'proposta',?,0)
-    """, (uid(), None, atelie, carlos, "Enviar proposta revisada",
+    """, (uid(), None, atelie, tiago, "Enviar proposta revisada",
           (datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(days=2)).strftime("%Y-%m-%d %H:%M:%S")))
 
     # reunião já realizada, pra alimentar o Relatório de Atividades Comerciais
     conn.execute("""
         INSERT INTO tasks (id, deal_id, customer_id, user_id, descricao, tipo_atividade, data_lembrete, executado, executado_em)
         VALUES (?,?,?,?,?,'reuniao',?,1,?)
-    """, (uid(), deal_joao, joao, marina, "Reunião de diagnóstico com o cliente",
+    """, (uid(), deal_joao, joao, carlos_vendas, "Reunião de diagnóstico com o cliente",
           (datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=3)).strftime("%Y-%m-%d %H:%M:%S"),
           (datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=3)).strftime("%Y-%m-%d %H:%M:%S")))
 
@@ -1599,7 +1602,7 @@ def seed(conn):
     conn.execute("""
         INSERT INTO tasks (id, deal_id, customer_id, user_id, descricao, tipo_atividade, data_lembrete, executado, executado_em)
         VALUES (?,?,?,?,?,'follow_up',?,1,?)
-    """, (uid(), None, ganha1, carlos, "Follow-up pós-fechamento",
+    """, (uid(), None, ganha1, tiago, "Follow-up pós-fechamento",
           (datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S"),
           (datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")))
 
