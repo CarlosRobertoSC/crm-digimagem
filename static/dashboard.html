@@ -68,6 +68,12 @@
   .rail-footer:hover .rail-label{color:var(--urgent);}
   .rail-avatar{width:32px;height:32px;flex-shrink:0;border-radius:50%;background:var(--surface-raised);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;font-family:var(--font-mono);font-size:11px;color:var(--text-muted);}
 
+  /* ---------- NAVEGAÇÃO MOBILE (escondida no desktop) ---------- */
+  .mobile-topbar{display:none;}
+  .rail-overlay{display:none;}
+  .rail-close-btn{display:none;}
+  .hamburger-btn{display:none;}
+
   .main{padding:26px 32px 40px;overflow-x:hidden;}
   .topbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:26px;flex-wrap:wrap;gap:14px;}
   .topbar-title{font-family:var(--font-display);font-size:22px;font-weight:600;}
@@ -285,6 +291,97 @@
   .report-kpi{background:var(--surface-raised);border-radius:10px;padding:14px;}
   .report-kpi b{font-family:var(--font-display);font-size:22px;display:block;}
   .report-kpi span{font-size:11px;color:var(--text-muted);}
+
+  /* =========================================================
+     RESPONSIVIDADE — TABLET E CELULAR
+     ========================================================= */
+
+  /* Tabelas ganham rolagem horizontal em vez de espremer o conteúdo */
+  .panel:has(table){overflow-x:auto;}
+  .clientes-table, .report-table{min-width:560px;}
+
+  /* ---------- TABLET (≤1024px): ajustes leves, menu continua fixo ---------- */
+  @media (max-width: 1024px) {
+    .main{padding:22px 20px 32px;}
+    .funil-cols{grid-template-columns:repeat(2,1fr);}
+    #delegadasCols.funil-cols{grid-template-columns:repeat(2,1fr) !important;}
+    .stat-row{grid-template-columns:repeat(3,1fr);gap:8px;}
+    .period-bar{gap:10px;}
+    .vendor-filter-select{margin-left:0;}
+  }
+
+  /* ---------- CELULAR / TABLET RETRATO (≤860px): menu vira gaveta ---------- */
+  @media (max-width: 860px) {
+    body{overflow-x:hidden;}
+    .shell{grid-template-columns:1fr;}
+    .shell.visible{display:flex;flex-direction:column;}
+
+    .mobile-topbar{
+      display:flex;align-items:center;gap:12px;padding:12px 16px;
+      background:var(--surface);border-bottom:1px solid var(--border);
+      position:sticky;top:0;z-index:40;
+    }
+    .mobile-topbar-title{display:flex;align-items:center;gap:8px;font-family:var(--font-display);font-weight:600;font-size:14px;}
+    .hamburger-btn{
+      display:flex;align-items:center;justify-content:center;width:36px;height:36px;border-radius:8px;
+      background:var(--surface-raised);border:1px solid var(--border);color:var(--text-primary);
+      font-size:16px;cursor:pointer;flex-shrink:0;
+    }
+
+    .rail{
+      position:fixed;top:0;left:0;bottom:0;width:78vw;max-width:300px;z-index:60;
+      transform:translateX(-100%);transition:transform .22s ease;box-shadow:2px 0 24px rgba(0,0,0,0.4);
+    }
+    .rail.open{transform:translateX(0);}
+    .rail-close-btn{
+      display:flex;align-items:center;justify-content:center;width:28px;height:28px;margin-left:auto;
+      border-radius:7px;background:var(--surface-raised);border:1px solid var(--border);color:var(--text-muted);cursor:pointer;
+    }
+    .rail-overlay{
+      display:none;position:fixed;inset:0;background:rgba(6,8,13,0.6);z-index:50;
+    }
+    .rail-overlay.open{display:block;}
+
+    .main{padding:16px 14px 32px;}
+    .topbar{margin-bottom:18px;}
+    .topbar-title{font-size:19px;}
+    .topbar-actions{width:100%;justify-content:flex-start;}
+
+    .grid{grid-template-columns:1fr;gap:16px;}
+    .funil-cols{grid-template-columns:repeat(2,1fr);gap:6px;}
+    #delegadasCols.funil-cols{grid-template-columns:1fr !important;}
+    .stat-row{grid-template-columns:1fr 1fr;}
+
+    .modal-box{max-width:94vw;padding:20px;max-height:90vh;}
+    .modal-overlay{padding:12px;}
+
+    .period-bar{flex-direction:column;align-items:stretch;gap:8px;}
+    .period-type-btn{flex:1;text-align:center;}
+    #periodNavGroup{justify-content:center;}
+    .vendor-filter-select{margin-left:0;width:100%;}
+    .period-custom-dates{flex-wrap:wrap;}
+
+    .report-tabs{flex-wrap:nowrap;overflow-x:auto;padding-bottom:2px;-webkit-overflow-scrolling:touch;}
+    .report-tab-btn{white-space:nowrap;flex-shrink:0;}
+
+    .report-bar-row{flex-wrap:wrap;}
+    .report-bar-label{width:100%;text-align:left;}
+    .report-bar-track{width:100%;}
+    .report-bar-value{width:100%;}
+
+    .login-card{max-width:92vw;padding:26px 22px;}
+    .login-hint{max-width:92vw;padding:0 10px;}
+  }
+
+  /* ---------- CELULAR PEQUENO (≤480px) ---------- */
+  @media (max-width: 480px) {
+    .funil-cols{grid-template-columns:1fr;}
+    .stat-row{grid-template-columns:1fr;}
+    .report-kpi-row{grid-template-columns:1fr 1fr;}
+    .topbar-title{font-size:17px;}
+    .cliente-avatar{width:36px;height:36px;}
+    .modal-actions{flex-direction:column-reverse;}
+  }
 </style>
 </head>
 <body>
@@ -318,10 +415,19 @@
 
 <!-- ========== SHELL ========== -->
 <div class="shell" id="shell">
-  <div class="rail">
+  <div class="mobile-topbar" id="mobileTopbar">
+    <button class="hamburger-btn" onclick="toggleMobileNav()" aria-label="Abrir menu">☰</button>
+    <div class="mobile-topbar-title">
+      <div class="rail-logo" style="width:26px;height:26px;font-size:11px;">DM</div>
+      CRM-Digimagem
+    </div>
+  </div>
+  <div class="rail-overlay" id="railOverlay" onclick="closeMobileNav()"></div>
+  <div class="rail" id="rail">
     <div class="rail-header">
       <div class="rail-logo">DM</div>
       <div class="rail-appname">CRM-Digimagem</div>
+      <button class="rail-close-btn" onclick="closeMobileNav()" aria-label="Fechar menu">✕</button>
     </div>
     <div class="rail-nav">
       <div class="rail-btn" title="Alertas" id="navAlertas" onclick="showView('dashboard')"><span class="rail-icon">◈</span><span class="rail-label">Alertas</span></div>
@@ -696,6 +802,17 @@ function showView(view) {
   document.getElementById("pageTitle").childNodes[0].textContent = VIEW_TITLES[view] + " ";
   document.getElementById(VIEW_NAV_BTN[view]).classList.add("active");
   if (VIEW_LOADERS[view]) VIEW_LOADERS[view]();
+  closeMobileNav();
+}
+
+function toggleMobileNav() {
+  document.getElementById("rail").classList.toggle("open");
+  document.getElementById("railOverlay").classList.toggle("open");
+}
+
+function closeMobileNav() {
+  document.getElementById("rail").classList.remove("open");
+  document.getElementById("railOverlay").classList.remove("open");
 }
 
 function toggleAdmin() {
