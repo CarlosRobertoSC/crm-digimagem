@@ -76,7 +76,9 @@ rota `/api/users` (só admin) e desativar os de exemplo.
     Vendedor só vê o histórico dos próprios negócios; admin vê o de todos, inclusive
     de outros admins. Abre pelo balão 💬 nos cards do funil, no painel do cliente ou
     na lista de negócios fechados. As notas são imutáveis, para o histórico ser um
-    registro confiável;
+    registro confiável. Dá para colar a conversa do WhatsApp (nota verde 🟢) ou
+    anexar um print (PNG/JPEG/WebP até 2 MB, guardado no próprio banco), e todo
+    comentário feito por um administrador aparece com o destaque "★ gestor";
   - view **Tarefas**: todos os compromissos (vencidos e futuros) de todos os seus
     clientes, com "+ Novo compromisso" avulso (escolhendo o cliente na hora);
   - view **Clientes**: lista completa com criação rápida;

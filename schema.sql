@@ -78,7 +78,19 @@ CREATE TABLE IF NOT EXISTS deal_notes (
     user_id     TEXT NOT NULL REFERENCES users(id),
     etapa_funil TEXT NOT NULL,
     conteudo    TEXT NOT NULL,
+    tipo        TEXT NOT NULL DEFAULT 'nota',    -- 'nota' | 'whatsapp'
+    tem_anexo   INTEGER NOT NULL DEFAULT 0,
     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Print/imagem anexado a uma nota do histórico (ex.: captura da conversa
+-- no WhatsApp). Guardado como BLOB no próprio banco: assim o backup do
+-- crm.db leva junto os anexos, sem depender de pasta de uploads.
+CREATE TABLE IF NOT EXISTS deal_note_anexos (
+    note_id      TEXT PRIMARY KEY REFERENCES deal_notes(id) ON DELETE CASCADE,
+    mime         TEXT NOT NULL,
+    nome_arquivo TEXT,
+    dados        BLOB NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_deal_notes_deal ON deal_notes(deal_id);

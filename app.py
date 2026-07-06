@@ -21,13 +21,14 @@ import uuid
 import json
 import time
 import threading
+import base64
 from collections import defaultdict, deque
 import urllib.request
 import urllib.error
 from datetime import datetime, timedelta, timezone, date
 from functools import wraps
 
-from flask import Flask, request, jsonify, g, send_from_directory
+from flask import Flask, request, jsonify, g, send_from_directory, Response
 from werkzeug.security import generate_password_hash, check_password_hash
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 
@@ -943,7 +944,7 @@ def deal_historico(deal_id):
         return erro
     db = get_db()
     notas = db.execute("""
-        SELECT n.*, u.nome as autor_nome FROM deal_notes n
+        SELECT n.*, u.nome as autor_nome, u.role as autor_role FROM deal_notes n
         LEFT JOIN users u ON u.id = n.user_id
         WHERE n.deal_id = ?
     """, (deal_id,)).fetchall()
@@ -954,7 +955,8 @@ def deal_historico(deal_id):
     """, (deal_id,)).fetchall()
     eventos = (
         [{"tipo": "nota", "id": n["id"], "conteudo": n["conteudo"], "etapa_funil": n["etapa_funil"],
-          "autor_nome": n["autor_nome"], "autor_id": n["user_id"], "data": n["created_at"]}
+          "autor_nome": n["autor_nome"], "autor_id": n["user_id"], "autor_role": n["autor_role"],
+          "nota_tipo": n["tipo"], "tem_anexo": bool(n["tem_anexo"]), "data": n["created_at"]}
          for n in notas]
         + [{"tipo": "etapa", "etapa_anterior": e["etapa_anterior"], "etapa_nova": e["etapa_nova"],
             "autor_nome": e["autor_nome"], "data": e["data_transicao"]}
@@ -972,21 +974,69 @@ def add_deal_nota(deal_id):
         return erro
     body = request.get_json(force=True, silent=True) or {}
     conteudo = (body.get("conteudo") or "").strip()
-    if not conteudo:
-        return jsonify({"error": "Escreva o que foi conversado antes de salvar."}), 400
-    if len(conteudo) > 4000:
-        return jsonify({"error": "A nota é longa demais (máximo de 4.000 caracteres)."}), 400
+    tipo = body.get("tipo") or "nota"
+    if tipo not in ("nota", "whatsapp"):
+        return jsonify({"error": "Tipo de nota inválido."}), 400
+    anexo = body.get("anexo") or None
+
+    if not conteudo and not anexo:
+        return jsonify({"error": "Escreva o que foi conversado ou anexe um print antes de salvar."}), 400
+    # Conversa colada do WhatsApp pode ser longa; anotação comum é mais curta.
+    limite = 20000 if tipo == "whatsapp" else 4000
+    if len(conteudo) > limite:
+        return jsonify({"error": f"O texto é longo demais (máximo de {limite} caracteres para este tipo de nota)."}), 400
+
+    dados_anexo, mime_anexo, nome_anexo = None, None, None
+    if anexo:
+        mime_anexo = (anexo.get("mime") or "").lower()
+        if mime_anexo not in ANEXO_MIMES_PERMITIDOS:
+            return jsonify({"error": "O anexo precisa ser uma imagem PNG, JPEG ou WebP."}), 400
+        try:
+            dados_anexo = base64.b64decode(anexo.get("dados_base64") or "", validate=True)
+        except Exception:
+            return jsonify({"error": "Não foi possível ler o anexo enviado."}), 400
+        if not dados_anexo or len(dados_anexo) > ANEXO_TAMANHO_MAX:
+            return jsonify({"error": "O anexo precisa ter no máximo 2 MB."}), 400
+        nome_anexo = (anexo.get("nome") or "anexo")[:120]
+
     db = get_db()
     nid = new_id()
     # A nota fica carimbada com a etapa em que o negócio está AGORA —
     # assim o histórico mostra o que foi conversado em cada fase da venda.
     db.execute("""
-        INSERT INTO deal_notes (id, deal_id, user_id, etapa_funil, conteudo)
-        VALUES (?,?,?,?,?)
-    """, (nid, deal_id, g.current_user["id"], d["etapa_funil"], conteudo))
-    audit("create", "deal_notes", nid, {"deal_id": deal_id})
+        INSERT INTO deal_notes (id, deal_id, user_id, etapa_funil, conteudo, tipo, tem_anexo)
+        VALUES (?,?,?,?,?,?,?)
+    """, (nid, deal_id, g.current_user["id"], d["etapa_funil"], conteudo, tipo, 1 if dados_anexo else 0))
+    if dados_anexo:
+        db.execute("INSERT INTO deal_note_anexos (note_id, mime, nome_arquivo, dados) VALUES (?,?,?,?)",
+                   (nid, mime_anexo, nome_anexo, dados_anexo))
+    audit("create", "deal_notes", nid, {"deal_id": deal_id, "tipo": tipo, "tem_anexo": bool(dados_anexo)})
     db.commit()
     return jsonify({"id": nid}), 201
+
+
+ANEXO_MIMES_PERMITIDOS = {"image/png", "image/jpeg", "image/webp"}
+ANEXO_TAMANHO_MAX = 2 * 1024 * 1024  # 2 MB
+
+
+@app.get("/api/deals/<deal_id>/notas/<note_id>/anexo")
+@login_required
+def get_deal_nota_anexo(deal_id, note_id):
+    """Serve o print anexado a uma nota, com a MESMA regra de visibilidade
+    do histórico (vendedor: só os próprios negócios; admin: todos)."""
+    d, erro = _deal_permitido_ou_erro(deal_id)
+    if erro:
+        return erro
+    db = get_db()
+    row = db.execute("""
+        SELECT a.mime, a.dados FROM deal_note_anexos a
+        JOIN deal_notes n ON n.id = a.note_id
+        WHERE a.note_id = ? AND n.deal_id = ?
+    """, (note_id, deal_id)).fetchone()
+    if not row:
+        return jsonify({"error": "Anexo não encontrado."}), 404
+    return Response(row["dados"], mimetype=row["mime"],
+                    headers={"Cache-Control": "private, max-age=300"})
 
 
 @app.put("/api/deals/<deal_id>")
@@ -1717,6 +1767,10 @@ def migrate_missing_columns(conn):
         },
         "tasks": {
             "tipo_atividade": "TEXT NOT NULL DEFAULT 'outro'",
+        },
+        "deal_notes": {
+            "tipo": "TEXT NOT NULL DEFAULT 'nota'",
+            "tem_anexo": "INTEGER NOT NULL DEFAULT 0",
         },
     }
     for tabela, colunas in tabelas_e_colunas.items():

@@ -211,6 +211,17 @@
   .hist-composer-hint{font-size:10.5px;color:var(--text-muted);font-family:var(--font-mono);}
   .chat-badge{font-size:10px;color:var(--text-muted);font-family:var(--font-mono);cursor:pointer;border:1px solid var(--border);border-radius:20px;padding:2px 8px;display:inline-block;margin-top:5px;transition:.15s;}
   .chat-badge:hover{color:var(--text-primary);border-color:var(--signal);}
+  .hist-nota-card.whatsapp{border-color:rgba(37,211,102,.45);background:rgba(37,211,102,.06);}
+  .hist-badge-wa{font-size:9.5px;font-family:var(--font-mono);text-transform:uppercase;color:#1fbf63;border:1px solid rgba(37,211,102,.5);border-radius:20px;padding:2px 8px;}
+  .hist-nota-card.gestor{border-color:var(--signal);box-shadow:inset 3px 0 0 var(--signal);}
+  .hist-badge-gestor{font-size:9.5px;font-family:var(--font-mono);text-transform:uppercase;color:var(--signal);border:1px solid var(--signal);border-radius:20px;padding:2px 8px;}
+  .hist-anexo-img{display:block;max-width:100%;max-height:260px;border-radius:8px;margin-top:8px;border:1px solid var(--border);cursor:zoom-in;}
+  .hist-tipo-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;}
+  .hist-tipo-btn{background:var(--surface-raised);border:1px solid var(--border);border-radius:20px;color:var(--text-muted);font-size:11px;padding:5px 12px;cursor:pointer;transition:.15s;font-family:var(--font-mono);}
+  .hist-tipo-btn:hover{color:var(--text-primary);}
+  .hist-tipo-btn.active{color:var(--text-primary);border-color:var(--signal);background:var(--signal-soft);}
+  .hist-anexo-chip{display:none;align-items:center;gap:6px;font-size:10.5px;font-family:var(--font-mono);color:var(--text-muted);border:1px dashed var(--border);border-radius:20px;padding:4px 10px;max-width:100%;overflow:hidden;}
+  .hist-anexo-chip button{background:none;border:none;color:var(--urgent);cursor:pointer;font-size:12px;padding:0;line-height:1;}
   .modal-actions{display:flex;gap:8px;margin-top:16px;flex-shrink:0;}
   .modal-actions .btn-primary{flex:1;justify-content:center;}
   .modal-cancel{
@@ -729,6 +740,13 @@
     </div>
     <div class="hist-timeline" id="histTimeline"></div>
     <div class="hist-composer">
+      <div class="hist-tipo-row">
+        <button class="hist-tipo-btn active" id="histTipoNota" onclick="setHistTipo('nota')">✎ Anotação</button>
+        <button class="hist-tipo-btn" id="histTipoWa" onclick="setHistTipo('whatsapp')">🟢 Conversa do WhatsApp</button>
+        <button class="hist-tipo-btn" onclick="document.getElementById('histAnexoFile').click()" title="Anexar uma captura de tela (PNG, JPEG ou WebP, até 2 MB)">📎 Anexar print</button>
+        <span class="hist-anexo-chip" id="histAnexoChip"><span id="histAnexoNome"></span><button onclick="limparAnexoHist()" title="Remover anexo">✕</button></span>
+        <input type="file" id="histAnexoFile" accept="image/png,image/jpeg,image/webp" style="display:none;">
+      </div>
       <textarea id="histNotaInput" placeholder="Registre aqui o que foi conversado com o cliente… (Ctrl+Enter salva)"></textarea>
       <div class="modal-error" id="histError"></div>
       <div class="hist-composer-row">
@@ -1720,12 +1738,67 @@ async function loadDelegadasView() {
 // os demais com 403); admin abre o de qualquer negócio.
 // ------------------------------------------------------------------
 let HIST_DEAL_ID = null;
+let HIST_NOTA_TIPO = "nota";
+let HIST_ANEXO = null; // { nome, mime, dados_base64 }
+
+function setHistTipo(tipo) {
+  HIST_NOTA_TIPO = tipo;
+  document.getElementById("histTipoNota").classList.toggle("active", tipo === "nota");
+  document.getElementById("histTipoWa").classList.toggle("active", tipo === "whatsapp");
+  document.getElementById("histNotaInput").placeholder = tipo === "whatsapp"
+    ? "Cole aqui a conversa copiada do WhatsApp… (Ctrl+Enter salva)"
+    : "Registre aqui o que foi conversado com o cliente… (Ctrl+Enter salva)";
+}
+
+function limparAnexoHist() {
+  HIST_ANEXO = null;
+  document.getElementById("histAnexoFile").value = "";
+  document.getElementById("histAnexoChip").style.display = "none";
+}
+
+document.getElementById("histAnexoFile").addEventListener("change", (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const errBox = document.getElementById("histError");
+  errBox.style.display = "none";
+  if (!["image/png", "image/jpeg", "image/webp"].includes(file.type)) {
+    errBox.textContent = "O print precisa ser uma imagem PNG, JPEG ou WebP.";
+    errBox.style.display = "block"; e.target.value = ""; return;
+  }
+  if (file.size > 2 * 1024 * 1024) {
+    errBox.textContent = "O print pode ter no máximo 2 MB.";
+    errBox.style.display = "block"; e.target.value = ""; return;
+  }
+  const reader = new FileReader();
+  reader.onload = () => {
+    HIST_ANEXO = { nome: file.name, mime: file.type, dados_base64: String(reader.result).split(",")[1] };
+    document.getElementById("histAnexoNome").textContent = "📎 " + file.name;
+    document.getElementById("histAnexoChip").style.display = "inline-flex";
+  };
+  reader.readAsDataURL(file);
+});
+
+async function carregarAnexoImg(img) {
+  // <img src> não envia o token; baixamos o anexo autenticado e criamos um objectURL
+  try {
+    const res = await fetch(`${API}/deals/${HIST_DEAL_ID}/notas/${img.dataset.anexo}/anexo`,
+      { headers: { Authorization: "Bearer " + TOKEN } });
+    if (!res.ok) throw new Error();
+    const url = URL.createObjectURL(await res.blob());
+    img.src = url;
+    img.onclick = () => window.open(url, "_blank");
+  } catch {
+    img.style.display = "none";
+  }
+}
 
 async function openHistorico(dealId) {
   HIST_DEAL_ID = dealId;
   const errBox = document.getElementById("histError");
   errBox.style.display = "none";
   document.getElementById("histNotaInput").value = "";
+  setHistTipo("nota");
+  limparAnexoHist();
   document.getElementById("histTimeline").innerHTML = `<div style="color:var(--text-muted);font-size:12px;">carregando…</div>`;
   document.getElementById("histOverlay").classList.add("open");
   try {
@@ -1750,7 +1823,9 @@ async function renderHistorico() {
     `${esc(d.cliente_nome)} · vendedor: <b>${esc(d.vendedor_nome || "—")}</b>` +
     ` · R$ ${Number(d.valor_estimado).toLocaleString("pt-BR")}` +
     ` · <span class="pill ${esc(d.status)}">${esc(ETAPA_LABEL[d.etapa_funil] || d.etapa_funil)}</span>`;
+  const comoGestor = CURRENT_USER.role === "admin" && d.user_id && d.user_id !== CURRENT_USER.id;
   document.getElementById("histComposerHint").textContent =
+    (comoGestor ? "★ comentando como gestor · " : "") +
     `será registrada na etapa atual: ${ETAPA_LABEL[d.etapa_funil] || d.etapa_funil}`;
 
   const box = document.getElementById("histTimeline");
@@ -1769,19 +1844,25 @@ async function renderHistorico() {
           <div class="hist-meta">${quando}${ev.autor_nome ? " · por " + esc(ev.autor_nome) : ""}</div>
         </div>`;
     }
+    const ehGestor = ev.autor_role === "admin";
+    const ehWa = ev.nota_tipo === "whatsapp";
     return `
       <div class="hist-event nota">
-        <div class="hist-dot">💬</div>
-        <div class="hist-nota-card">
+        <div class="hist-dot">${ehWa ? "🟢" : "💬"}</div>
+        <div class="hist-nota-card${ehWa ? " whatsapp" : ""}${ehGestor ? " gestor" : ""}">
           <div class="hist-nota-top">
             <span class="hist-nota-autor">${esc(ev.autor_nome || "—")}</span>
+            ${ehGestor ? `<span class="hist-badge-gestor" title="Comentário feito por um administrador">★ gestor</span>` : ""}
+            ${ehWa ? `<span class="hist-badge-wa" title="Conversa colada do WhatsApp">WhatsApp</span>` : ""}
             <span class="hist-nota-etapa">${esc(ETAPA_LABEL[ev.etapa_funil] || ev.etapa_funil)}</span>
             <span class="hist-meta" style="margin-top:0;">${quando}</span>
           </div>
-          <div class="hist-nota-texto">${esc(ev.conteudo)}</div>
+          ${ev.conteudo ? `<div class="hist-nota-texto">${esc(ev.conteudo)}</div>` : ""}
+          ${ev.tem_anexo ? `<img class="hist-anexo-img" data-anexo="${esc(ev.id)}" alt="carregando anexo…">` : ""}
         </div>
       </div>`;
   }).join("");
+  box.querySelectorAll("img[data-anexo]").forEach(carregarAnexoImg);
   box.scrollTop = box.scrollHeight; // rola direto para o evento mais recente
 }
 
@@ -1790,14 +1871,19 @@ async function salvarNotaHistorico() {
   const errBox = document.getElementById("histError");
   errBox.style.display = "none";
   const conteudo = input.value.trim();
-  if (!conteudo) {
-    errBox.textContent = "Escreva o que foi conversado antes de salvar.";
+  if (!conteudo && !HIST_ANEXO) {
+    errBox.textContent = "Escreva o que foi conversado ou anexe um print antes de salvar.";
     errBox.style.display = "block";
     return;
   }
   try {
-    await api(`/deals/${HIST_DEAL_ID}/notas`, { method: "POST", body: JSON.stringify({ conteudo }) });
+    await api(`/deals/${HIST_DEAL_ID}/notas`, {
+      method: "POST",
+      body: JSON.stringify({ conteudo, tipo: HIST_NOTA_TIPO, anexo: HIST_ANEXO }),
+    });
     input.value = "";
+    setHistTipo("nota");
+    limparAnexoHist();
     await renderHistorico();
     if (CURRENT_VIEW === "negocios") loadNegociosView();
     else if (CURRENT_VIEW === "dashboard") loadFunil(); // atualiza o contador 💬 dos cards
