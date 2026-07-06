@@ -68,6 +68,21 @@ CREATE TABLE IF NOT EXISTS deal_stage_history (
 );
 
 CREATE INDEX IF NOT EXISTS idx_stage_history_deal ON deal_stage_history(deal_id);
+
+-- Histórico da negociação: cada linha é uma "conversa" registrada pelo
+-- vendedor em um negócio, carimbada com a etapa do funil em que ocorreu.
+-- Visibilidade: vendedor só vê notas dos PRÓPRIOS negócios; admin vê tudo.
+CREATE TABLE IF NOT EXISTS deal_notes (
+    id          TEXT PRIMARY KEY,
+    deal_id     TEXT NOT NULL REFERENCES deals(id) ON DELETE CASCADE,
+    user_id     TEXT NOT NULL REFERENCES users(id),
+    etapa_funil TEXT NOT NULL,
+    conteudo    TEXT NOT NULL,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_deal_notes_deal ON deal_notes(deal_id);
+CREATE INDEX IF NOT EXISTS idx_deal_notes_user ON deal_notes(user_id);
 CREATE INDEX IF NOT EXISTS idx_stage_history_data ON deal_stage_history(data_transicao);
 CREATE INDEX IF NOT EXISTS idx_stage_history_etapa_nova ON deal_stage_history(etapa_nova);
 

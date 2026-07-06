@@ -70,6 +70,13 @@ rota `/api/users` (só admin) e desativar os de exemplo.
   - dentro do painel do cliente: "+ Novo negócio" e "+ Novo compromisso";
   - view **Negócios**: funil com controle de etapa direto no card (dropdown + botões
     "marcar ganho"/"marcar perdido"), mais a lista de negócios já fechados;
+  - **Histórico da negociação** (💬): cada negócio tem uma linha do tempo que mescla
+    as conversas registradas pelo vendedor (quem, quando, em qual etapa e o que foi
+    conversado) com as mudanças de etapa do funil, do primeiro contato ao fechamento.
+    Vendedor só vê o histórico dos próprios negócios; admin vê o de todos, inclusive
+    de outros admins. Abre pelo balão 💬 nos cards do funil, no painel do cliente ou
+    na lista de negócios fechados. As notas são imutáveis, para o histórico ser um
+    registro confiável;
   - view **Tarefas**: todos os compromissos (vencidos e futuros) de todos os seus
     clientes, com "+ Novo compromisso" avulso (escolhendo o cliente na hora);
   - view **Clientes**: lista completa com criação rápida;

@@ -798,7 +798,9 @@ def list_deals():
     db = get_db()
     clause, params = scope_filter_clause("user_id")
     rows = db.execute(f"""
-        SELECT d.*, c.nome as cliente_nome, u.nome as vendedor_nome FROM deals d
+        SELECT d.*, c.nome as cliente_nome, u.nome as vendedor_nome,
+               (SELECT COUNT(*) FROM deal_notes n WHERE n.deal_id = d.id) as notas_count
+        FROM deals d
         JOIN customers c ON c.id = d.customer_id
         LEFT JOIN users u ON u.id = d.user_id
         WHERE 1=1 {clause}
@@ -906,6 +908,85 @@ def get_deal(deal_id):
     if g.current_user["role"] != "admin" and d["user_id"] != g.current_user["id"]:
         return jsonify({"error": "Sem permissão para ver este negócio."}), 403
     return jsonify(dict(d))
+
+
+# ------------------------------------------------------------------
+# Rotas — Histórico da Negociação (conversas + mudanças de etapa)
+# Regra de visibilidade: vendedor só acessa o histórico dos PRÓPRIOS
+# negócios; admin acessa o histórico de qualquer negócio, inclusive
+# os de outros administradores. As notas são imutáveis (sem edição ou
+# exclusão) para o histórico ser um registro confiável do que ocorreu.
+# ------------------------------------------------------------------
+def _deal_permitido_ou_erro(deal_id):
+    """Carrega o negócio (com nomes de cliente e vendedor) e aplica a
+    regra de visibilidade. Retorna (deal, None) ou (None, resposta_erro)."""
+    db = get_db()
+    d = db.execute("""
+        SELECT d.*, c.nome as cliente_nome, u.nome as vendedor_nome
+        FROM deals d
+        JOIN customers c ON c.id = d.customer_id
+        LEFT JOIN users u ON u.id = d.user_id
+        WHERE d.id = ?
+    """, (deal_id,)).fetchone()
+    if not d:
+        return None, (jsonify({"error": "Negócio não encontrado."}), 404)
+    if g.current_user["role"] != "admin" and d["user_id"] != g.current_user["id"]:
+        return None, (jsonify({"error": "Sem permissão para acessar o histórico deste negócio."}), 403)
+    return d, None
+
+
+@app.get("/api/deals/<deal_id>/historico")
+@login_required
+def deal_historico(deal_id):
+    d, erro = _deal_permitido_ou_erro(deal_id)
+    if erro:
+        return erro
+    db = get_db()
+    notas = db.execute("""
+        SELECT n.*, u.nome as autor_nome FROM deal_notes n
+        LEFT JOIN users u ON u.id = n.user_id
+        WHERE n.deal_id = ?
+    """, (deal_id,)).fetchall()
+    etapas = db.execute("""
+        SELECT h.*, u.nome as autor_nome FROM deal_stage_history h
+        LEFT JOIN users u ON u.id = h.user_id
+        WHERE h.deal_id = ?
+    """, (deal_id,)).fetchall()
+    eventos = (
+        [{"tipo": "nota", "id": n["id"], "conteudo": n["conteudo"], "etapa_funil": n["etapa_funil"],
+          "autor_nome": n["autor_nome"], "autor_id": n["user_id"], "data": n["created_at"]}
+         for n in notas]
+        + [{"tipo": "etapa", "etapa_anterior": e["etapa_anterior"], "etapa_nova": e["etapa_nova"],
+            "autor_nome": e["autor_nome"], "data": e["data_transicao"]}
+           for e in etapas]
+    )
+    eventos.sort(key=lambda ev: (ev["data"], 0 if ev["tipo"] == "etapa" else 1))
+    return jsonify({"deal": dict(d), "eventos": eventos})
+
+
+@app.post("/api/deals/<deal_id>/notas")
+@login_required
+def add_deal_nota(deal_id):
+    d, erro = _deal_permitido_ou_erro(deal_id)
+    if erro:
+        return erro
+    body = request.get_json(force=True, silent=True) or {}
+    conteudo = (body.get("conteudo") or "").strip()
+    if not conteudo:
+        return jsonify({"error": "Escreva o que foi conversado antes de salvar."}), 400
+    if len(conteudo) > 4000:
+        return jsonify({"error": "A nota é longa demais (máximo de 4.000 caracteres)."}), 400
+    db = get_db()
+    nid = new_id()
+    # A nota fica carimbada com a etapa em que o negócio está AGORA —
+    # assim o histórico mostra o que foi conversado em cada fase da venda.
+    db.execute("""
+        INSERT INTO deal_notes (id, deal_id, user_id, etapa_funil, conteudo)
+        VALUES (?,?,?,?,?)
+    """, (nid, deal_id, g.current_user["id"], d["etapa_funil"], conteudo))
+    audit("create", "deal_notes", nid, {"deal_id": deal_id})
+    db.commit()
+    return jsonify({"id": nid}), 201
 
 
 @app.put("/api/deals/<deal_id>")

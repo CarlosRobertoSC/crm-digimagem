@@ -184,6 +184,33 @@
     color:var(--text-primary);font-size:13px;font-family:var(--font-body);
   }
   .modal-box input:focus, .modal-box select:focus, .modal-box textarea:focus{outline:none;border-color:var(--signal);}
+
+  /* ---------- HISTÓRICO DA NEGOCIAÇÃO ---------- */
+  .hist-box{width:620px;max-width:94vw;max-height:86vh;display:flex;flex-direction:column;}
+  .hist-head{flex-shrink:0;margin-bottom:12px;}
+  .hist-sub{font-size:12px;color:var(--text-muted);margin-top:4px;line-height:1.6;}
+  .hist-timeline{flex:1;overflow-y:auto;padding:6px 4px 6px 0;margin-bottom:12px;min-height:120px;}
+  .hist-event{position:relative;padding-left:28px;margin-bottom:14px;}
+  .hist-event::before{content:"";position:absolute;left:8px;top:20px;bottom:-14px;width:2px;background:var(--border);}
+  .hist-event:last-child::before{display:none;}
+  .hist-dot{position:absolute;left:0;top:2px;width:18px;height:18px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:9px;}
+  .hist-event.etapa .hist-dot{background:var(--signal-soft);border:1px solid var(--signal);}
+  .hist-event.nota .hist-dot{background:var(--surface-raised);border:1px solid var(--border);}
+  .hist-etapa-label{font-size:12.5px;padding-top:2px;}
+  .hist-etapa-label b{color:var(--signal);}
+  .hist-meta{font-size:10.5px;color:var(--text-muted);font-family:var(--font-mono);margin-top:2px;}
+  .hist-nota-card{background:var(--surface-raised);border:1px solid var(--border);border-radius:10px;padding:10px 12px;}
+  .hist-nota-top{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:5px;}
+  .hist-nota-autor{font-size:12px;font-weight:600;}
+  .hist-nota-etapa{font-size:9.5px;font-family:var(--font-mono);text-transform:uppercase;color:var(--text-muted);border:1px solid var(--border);border-radius:20px;padding:2px 8px;}
+  .hist-nota-texto{font-size:12.5px;line-height:1.55;white-space:pre-wrap;word-break:break-word;}
+  .hist-composer{flex-shrink:0;border-top:1px solid var(--border);padding-top:12px;}
+  .hist-composer textarea{width:100%;background:var(--surface-raised);border:1px solid var(--border);border-radius:8px;padding:10px 12px;color:var(--text-primary);font-size:13px;font-family:inherit;resize:vertical;min-height:62px;}
+  .hist-composer textarea:focus{outline:none;border-color:var(--signal);}
+  .hist-composer-row{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:8px;flex-wrap:wrap;}
+  .hist-composer-hint{font-size:10.5px;color:var(--text-muted);font-family:var(--font-mono);}
+  .chat-badge{font-size:10px;color:var(--text-muted);font-family:var(--font-mono);cursor:pointer;border:1px solid var(--border);border-radius:20px;padding:2px 8px;display:inline-block;margin-top:5px;transition:.15s;}
+  .chat-badge:hover{color:var(--text-primary);border-color:var(--signal);}
   .modal-actions{display:flex;gap:8px;margin-top:16px;flex-shrink:0;}
   .modal-actions .btn-primary{flex:1;justify-content:center;}
   .modal-cancel{
@@ -693,6 +720,28 @@
   </div>
 </div>
 
+<!-- ========== MODAL: HISTÓRICO DA NEGOCIAÇÃO ========== -->
+<div class="modal-overlay" id="histOverlay">
+  <div class="modal-box hist-box">
+    <div class="hist-head">
+      <h3 id="histTitle" style="margin-bottom:0;">Histórico da negociação</h3>
+      <div class="hist-sub" id="histSub"></div>
+    </div>
+    <div class="hist-timeline" id="histTimeline"></div>
+    <div class="hist-composer">
+      <textarea id="histNotaInput" placeholder="Registre aqui o que foi conversado com o cliente… (Ctrl+Enter salva)"></textarea>
+      <div class="modal-error" id="histError"></div>
+      <div class="hist-composer-row">
+        <span class="hist-composer-hint" id="histComposerHint"></span>
+        <div style="display:flex;gap:8px;">
+          <button class="modal-cancel" onclick="closeHistorico()">Fechar</button>
+          <button class="btn-primary" onclick="salvarNotaHistorico()">💬 Registrar conversa</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script>
 const API = "/api";
 let TOKEN = null;
@@ -921,6 +970,7 @@ async function renderFunil(containerId, subId, showControls) {
           <span class="valor">R$ ${Number(d.valor_estimado).toLocaleString("pt-BR")}</span>
           ${mostrandoTodos() && d.vendedor_nome ? `<span class="vendor-badge" style="display:inline-block;margin-top:4px;">${esc(d.vendedor_nome)}</span>` : ""}
           ${late ? `<span class="late-flag">● parado ${horasParado}h</span>` : ""}
+          <span class="chat-badge" data-hist="${d.id}" title="Histórico da negociação">💬 ${d.notas_count || 0}</span>
           ${showControls ? `
           <div class="funil-card-actions">
             <select data-deal-select="${d.id}">
@@ -937,6 +987,9 @@ async function renderFunil(containerId, subId, showControls) {
   });
   cols.querySelectorAll(".funil-card b, .funil-card .valor, .funil-card .late-flag").forEach(el => {
     el.addEventListener("click", () => showCustomer(el.closest(".funil-card").dataset.customer));
+  });
+  cols.querySelectorAll("[data-hist]").forEach(el => {
+    el.addEventListener("click", (e) => { e.stopPropagation(); openHistorico(el.dataset.hist); });
   });
   if (!showControls) {
     cols.querySelectorAll(".funil-card").forEach(el => {
@@ -983,11 +1036,11 @@ async function loadNegociosView() {
   const fechados = deals.filter(d => d.status !== "aberto");
   const verTodos = mostrandoTodos();
   document.getElementById("theadFechados").innerHTML = verTodos
-    ? `<tr><th>Negócio</th><th>Cliente</th><th>Vendedor</th><th>Valor</th><th>Resultado</th></tr>`
-    : `<tr><th>Negócio</th><th>Cliente</th><th>Valor</th><th>Resultado</th></tr>`;
+    ? `<tr><th>Negócio</th><th>Cliente</th><th>Vendedor</th><th>Valor</th><th>Resultado</th><th></th></tr>`
+    : `<tr><th>Negócio</th><th>Cliente</th><th>Valor</th><th>Resultado</th><th></th></tr>`;
   const tbody = document.getElementById("fechadosTableBody");
   if (!fechados.length) {
-    tbody.innerHTML = `<tr><td colspan="${verTodos ? 5 : 4}" style="color:var(--text-muted);">Nenhum negócio fechado ainda.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="${verTodos ? 6 : 5}" style="color:var(--text-muted);">Nenhum negócio fechado ainda.</td></tr>`;
     return;
   }
   tbody.innerHTML = fechados.map(d => `
@@ -997,6 +1050,7 @@ async function loadNegociosView() {
       ${verTodos ? `<td>${esc(d.vendedor_nome || "—")}</td>` : ""}
       <td>R$ ${Number(d.valor_estimado).toLocaleString("pt-BR")}</td>
       <td><span class="pill ${d.status}">${d.status === "ganho" ? "Ganho" : "Perdido"}</span></td>
+      <td onclick="event.stopPropagation()"><button class="btn-mini" onclick="openHistorico('${d.id}')">💬 Histórico</button></td>
     </tr>
   `).join("");
 }
@@ -1022,7 +1076,10 @@ async function showCustomer(customerId) {
     dealsHtml += data.deals.map(d => `
       <div class="task-row">
         <span>${esc(d.titulo)} — R$ ${Number(d.valor_estimado).toLocaleString("pt-BR")} <span style="color:var(--text-muted);">(${ETAPA_LABEL[d.etapa_funil] || d.etapa_funil})</span></span>
-        ${d.status === "aberto" ? `<button class="btn-mini" onclick="SELECTED_EDIT_DEAL_ID='${d.id}'; openModal('editar_negocio')">Editar</button>` : ""}
+        <span style="display:flex;gap:5px;flex-shrink:0;">
+          <button class="btn-mini" onclick="openHistorico('${d.id}')" title="Histórico da negociação">💬</button>
+          ${d.status === "aberto" ? `<button class="btn-mini" onclick="SELECTED_EDIT_DEAL_ID='${d.id}'; openModal('editar_negocio')">Editar</button>` : ""}
+        </span>
       </div>`).join("");
   } else {
     dealsHtml += `<div style="color:var(--text-muted);font-size:12px;">Nenhum negócio ainda.</div>`;
@@ -1656,6 +1713,111 @@ async function loadDelegadasView() {
     });
   });
 }
+
+// ------------------------------------------------------------------
+// HISTÓRICO DA NEGOCIAÇÃO — linha do tempo de conversas + etapas.
+// Vendedor só abre o histórico dos próprios negócios (a API bloqueia
+// os demais com 403); admin abre o de qualquer negócio.
+// ------------------------------------------------------------------
+let HIST_DEAL_ID = null;
+
+async function openHistorico(dealId) {
+  HIST_DEAL_ID = dealId;
+  const errBox = document.getElementById("histError");
+  errBox.style.display = "none";
+  document.getElementById("histNotaInput").value = "";
+  document.getElementById("histTimeline").innerHTML = `<div style="color:var(--text-muted);font-size:12px;">carregando…</div>`;
+  document.getElementById("histOverlay").classList.add("open");
+  try {
+    await renderHistorico();
+  } catch (err) {
+    document.getElementById("histTimeline").innerHTML =
+      `<div class="empty-state">${esc(err.message || "Erro ao carregar o histórico.")}</div>`;
+  }
+}
+
+function fmtDataHist(iso) {
+  // datas do banco são UTC "naive" — o Z converte para o fuso local do usuário
+  return new Date(iso.replace(" ", "T") + "Z").toLocaleString("pt-BR",
+    { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+async function renderHistorico() {
+  const data = await api(`/deals/${HIST_DEAL_ID}/historico`);
+  const d = data.deal;
+  document.getElementById("histTitle").textContent = d.titulo;
+  document.getElementById("histSub").innerHTML =
+    `${esc(d.cliente_nome)} · vendedor: <b>${esc(d.vendedor_nome || "—")}</b>` +
+    ` · R$ ${Number(d.valor_estimado).toLocaleString("pt-BR")}` +
+    ` · <span class="pill ${esc(d.status)}">${esc(ETAPA_LABEL[d.etapa_funil] || d.etapa_funil)}</span>`;
+  document.getElementById("histComposerHint").textContent =
+    `será registrada na etapa atual: ${ETAPA_LABEL[d.etapa_funil] || d.etapa_funil}`;
+
+  const box = document.getElementById("histTimeline");
+  if (!data.eventos.length) {
+    box.innerHTML = `<div class="empty-state">Nenhuma conversa registrada ainda. Use o campo abaixo para registrar a primeira.</div>`;
+    return;
+  }
+  box.innerHTML = data.eventos.map(ev => {
+    const quando = fmtDataHist(ev.data);
+    if (ev.tipo === "etapa") {
+      const de = ev.etapa_anterior ? `${esc(ETAPA_LABEL[ev.etapa_anterior] || ev.etapa_anterior)} → ` : "Negócio criado em ";
+      return `
+        <div class="hist-event etapa">
+          <div class="hist-dot">◆</div>
+          <div class="hist-etapa-label">${de}<b>${esc(ETAPA_LABEL[ev.etapa_nova] || ev.etapa_nova)}</b></div>
+          <div class="hist-meta">${quando}${ev.autor_nome ? " · por " + esc(ev.autor_nome) : ""}</div>
+        </div>`;
+    }
+    return `
+      <div class="hist-event nota">
+        <div class="hist-dot">💬</div>
+        <div class="hist-nota-card">
+          <div class="hist-nota-top">
+            <span class="hist-nota-autor">${esc(ev.autor_nome || "—")}</span>
+            <span class="hist-nota-etapa">${esc(ETAPA_LABEL[ev.etapa_funil] || ev.etapa_funil)}</span>
+            <span class="hist-meta" style="margin-top:0;">${quando}</span>
+          </div>
+          <div class="hist-nota-texto">${esc(ev.conteudo)}</div>
+        </div>
+      </div>`;
+  }).join("");
+  box.scrollTop = box.scrollHeight; // rola direto para o evento mais recente
+}
+
+async function salvarNotaHistorico() {
+  const input = document.getElementById("histNotaInput");
+  const errBox = document.getElementById("histError");
+  errBox.style.display = "none";
+  const conteudo = input.value.trim();
+  if (!conteudo) {
+    errBox.textContent = "Escreva o que foi conversado antes de salvar.";
+    errBox.style.display = "block";
+    return;
+  }
+  try {
+    await api(`/deals/${HIST_DEAL_ID}/notas`, { method: "POST", body: JSON.stringify({ conteudo }) });
+    input.value = "";
+    await renderHistorico();
+    if (CURRENT_VIEW === "negocios") loadNegociosView();
+    else if (CURRENT_VIEW === "dashboard") loadFunil(); // atualiza o contador 💬 dos cards
+  } catch (err) {
+    errBox.textContent = err.message || "Erro ao salvar.";
+    errBox.style.display = "block";
+  }
+}
+
+function closeHistorico() {
+  document.getElementById("histOverlay").classList.remove("open");
+  HIST_DEAL_ID = null;
+}
+
+document.getElementById("histOverlay").addEventListener("click", (e) => {
+  if (e.target.id === "histOverlay") closeHistorico();
+});
+document.getElementById("histNotaInput").addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === "Enter") salvarNotaHistorico();
+});
 
 // ------------------------------------------------------------------
 // MODAL GENÉRICO — cria cliente / negócio / compromisso / usuário
