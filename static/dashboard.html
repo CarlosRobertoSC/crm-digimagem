@@ -500,7 +500,9 @@
       <div class="panel">
         <div class="panel-head">
           <div class="panel-title">◍ Todos os Clientes</div>
-          <div style="display:flex;gap:10px;align-items:center;">
+          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+            <input type="search" id="clienteSearch" placeholder="🔍 Buscar nome, email, CPF/CNPJ, cidade…" oninput="onClienteSearchInput()"
+              style="background:var(--surface-raised);border:1px solid var(--border);border-radius:8px;padding:8px 12px;color:var(--text-primary);font-size:12.5px;width:260px;max-width:100%;">
             <label style="display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--text-muted);font-family:var(--font-mono);cursor:pointer;">
               <input type="checkbox" id="toggleInativos" onchange="loadClientesView()"> mostrar inativos
             </label>
@@ -717,6 +719,21 @@ const TAG_LABEL = {
   abandono_funil:"Abandono de funil", sugestao_conteudo:"Sugestão de fidelização"
 };
 
+// ------------------------------------------------------------------
+// Proteção contra XSS: TODO dado vindo da API/do usuário que for
+// interpolado em innerHTML precisa passar por esc(). Para passar
+// dados como argumento string em handlers inline (onclick="fn(...)"),
+// use jsArg(), que escapa tanto o contexto JS quanto o HTML.
+// ------------------------------------------------------------------
+function esc(v) {
+  return String(v ?? "").replace(/[&<>"']/g, ch => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]
+  ));
+}
+function jsArg(v) {
+  return esc(JSON.stringify(String(v ?? "")));
+}
+
 async function api(path, opts = {}) {
   const res = await fetch(API + path, {
     ...opts,
@@ -863,11 +880,11 @@ async function loadAlerts() {
       ${dot}
       <div class="alert-body">
         <div class="alert-top">
-          <span class="alert-cliente">${a.cliente_nome}</span>
+          <span class="alert-cliente">${esc(a.cliente_nome)}</span>
           <span class="alert-tag ${a.tipo_alerta}">${TAG_LABEL[a.tipo_alerta] || a.tipo_alerta}</span>
-          ${mostrandoTodos() && a.vendedor_nome ? `<span class="vendor-badge">${a.vendedor_nome}</span>` : ""}
+          ${mostrandoTodos() && a.vendedor_nome ? `<span class="vendor-badge">${esc(a.vendedor_nome)}</span>` : ""}
         </div>
-        <div class="alert-desc">${a.descricao_insight}</div>
+        <div class="alert-desc">${esc(a.descricao_insight)}</div>
         <div class="alert-meta">${new Date(a.created_at.replace(" ", "T")).toLocaleString("pt-BR")}</div>
       </div>
       <button class="btn-mini">Marcar lido</button>
@@ -900,9 +917,9 @@ async function renderFunil(containerId, subId, showControls) {
       const late = horasParado > 48;
       html += `
         <div class="funil-card ${late ? "late" : ""}" data-customer="${d.customer_id}" data-deal="${d.id}">
-          <b>${d.cliente_nome}</b>
+          <b>${esc(d.cliente_nome)}</b>
           <span class="valor">R$ ${Number(d.valor_estimado).toLocaleString("pt-BR")}</span>
-          ${mostrandoTodos() && d.vendedor_nome ? `<span class="vendor-badge" style="display:inline-block;margin-top:4px;">${d.vendedor_nome}</span>` : ""}
+          ${mostrandoTodos() && d.vendedor_nome ? `<span class="vendor-badge" style="display:inline-block;margin-top:4px;">${esc(d.vendedor_nome)}</span>` : ""}
           ${late ? `<span class="late-flag">● parado ${horasParado}h</span>` : ""}
           ${showControls ? `
           <div class="funil-card-actions">
@@ -975,9 +992,9 @@ async function loadNegociosView() {
   }
   tbody.innerHTML = fechados.map(d => `
     <tr onclick="showCustomer('${d.customer_id}'); showView('dashboard')">
-      <td>${d.titulo}</td>
-      <td>${d.cliente_nome}</td>
-      ${verTodos ? `<td>${d.vendedor_nome || "—"}</td>` : ""}
+      <td>${esc(d.titulo)}</td>
+      <td>${esc(d.cliente_nome)}</td>
+      ${verTodos ? `<td>${esc(d.vendedor_nome || "—")}</td>` : ""}
       <td>R$ ${Number(d.valor_estimado).toLocaleString("pt-BR")}</td>
       <td><span class="pill ${d.status}">${d.status === "ganho" ? "Ganho" : "Perdido"}</span></td>
     </tr>
@@ -997,14 +1014,14 @@ async function showCustomer(customerId) {
   let insightsHtml = "";
   if (data.insights.length) {
     insightsHtml = `<div class="insight-box"><span class="label">Alertas ativos gerados pelo CRM</span><ul>` +
-      data.insights.map(i => `<li>${i.descricao_insight}</li>`).join("") + `</ul></div>`;
+      data.insights.map(i => `<li>${esc(i.descricao_insight)}</li>`).join("") + `</ul></div>`;
   }
 
   let dealsHtml = `<div style="margin-top:14px;"><div class="panel-sub" style="margin-bottom:6px;">Negócios</div>`;
   if (data.deals.length) {
     dealsHtml += data.deals.map(d => `
       <div class="task-row">
-        <span>${d.titulo} — R$ ${Number(d.valor_estimado).toLocaleString("pt-BR")} <span style="color:var(--text-muted);">(${ETAPA_LABEL[d.etapa_funil] || d.etapa_funil})</span></span>
+        <span>${esc(d.titulo)} — R$ ${Number(d.valor_estimado).toLocaleString("pt-BR")} <span style="color:var(--text-muted);">(${ETAPA_LABEL[d.etapa_funil] || d.etapa_funil})</span></span>
         ${d.status === "aberto" ? `<button class="btn-mini" onclick="SELECTED_EDIT_DEAL_ID='${d.id}'; openModal('editar_negocio')">Editar</button>` : ""}
       </div>`).join("");
   } else {
@@ -1017,7 +1034,7 @@ async function showCustomer(customerId) {
     tasksHtml += data.tasks.map(t => {
       const vencida = !t.executado && new Date(t.data_lembrete.replace(" ", "T")) < new Date();
       return `<div class="task-row ${vencida ? "pendente-vencida" : ""}">
-        <span>${t.executado ? "✓ " : (vencida ? "⚠ " : "· ")}${t.descricao}</span>
+        <span>${t.executado ? "✓ " : (vencida ? "⚠ " : "· ")}${esc(t.descricao)}</span>
         ${!t.executado ? `<button class="btn-mini" onclick="completeTask('${t.id}','${customerId}')">Concluir</button>` : ""}
       </div>`;
     }).join("");
@@ -1035,26 +1052,26 @@ async function showCustomer(customerId) {
       <div style="display:flex;gap:6px;">
         <button class="btn-mini" onclick="openModal('editar_cliente')">Editar</button>
         <button class="btn-mini" onclick="toggleClienteAtivo('${c.id}', ${c.ativo ? "false" : "true"}).then(()=>showCustomer('${c.id}'))">${c.ativo ? "Desativar" : "Reativar"}</button>
-        <button class="btn-mini" onclick="excluirCliente('${c.id}', '${c.nome.replace(/'/g, "\\'")}')">Excluir</button>
+        <button class="btn-mini" onclick="excluirCliente('${c.id}', ${jsArg(c.nome)})">Excluir</button>
       </div>
     </div>
     <div class="cliente-card">
-      <div class="cliente-avatar">${iniciais}</div>
+      <div class="cliente-avatar">${esc(iniciais)}</div>
       <div>
-        <div class="cliente-nome">${c.nome} ${!c.ativo ? `<span class="pill perdido">inativo</span>` : ""}</div>
-        <div class="cliente-status">● ${c.status_fidelidade}</div>
+        <div class="cliente-nome">${esc(c.nome)} ${!c.ativo ? `<span class="pill perdido">inativo</span>` : ""}</div>
+        <div class="cliente-status">● ${esc(c.status_fidelidade)}</div>
       </div>
     </div>
     <div class="kv-row"><span>Última compra</span><span>${diasSemComprar !== null ? diasSemComprar + " dias atrás" : "sem registro"}</span></div>
     <div class="kv-row"><span>Negócios ativos</span><span>${data.deals.filter(d=>d.status==='aberto').length}</span></div>
-    ${c.cpf_cnpj ? `<div class="kv-row"><span>CPF/CNPJ</span><span>${c.cpf_cnpj}</span></div>` : ""}
-    ${c.telefone ? `<div class="kv-row"><span>Telefone</span><span>${c.telefone}</span></div>` : ""}
-    ${c.email ? `<div class="kv-row"><span>Email</span><span>${c.email}</span></div>` : ""}
-    ${enderecoCompleto ? `<div class="kv-row"><span>Endereço</span><span style="text-align:right;max-width:60%;">${enderecoCompleto}</span></div>` : ""}
+    ${c.cpf_cnpj ? `<div class="kv-row"><span>CPF/CNPJ</span><span>${esc(c.cpf_cnpj)}</span></div>` : ""}
+    ${c.telefone ? `<div class="kv-row"><span>Telefone</span><span>${esc(c.telefone)}</span></div>` : ""}
+    ${c.email ? `<div class="kv-row"><span>Email</span><span>${esc(c.email)}</span></div>` : ""}
+    ${enderecoCompleto ? `<div class="kv-row"><span>Endereço</span><span style="text-align:right;max-width:60%;">${esc(enderecoCompleto)}</span></div>` : ""}
     ${insightsHtml}
     ${dealsHtml}
     ${tasksHtml}
-    <button class="cta-whatsapp" onclick="openWhatsapp('${c.whatsapp_id || ""}')">⤴ Abrir conversa no WhatsApp</button>
+    <button class="cta-whatsapp" onclick="openWhatsapp(${jsArg(c.whatsapp_id || "")})">⤴ Abrir conversa no WhatsApp</button>
   `;
 }
 
@@ -1065,42 +1082,55 @@ async function completeTask(taskId, customerId) {
 }
 
 function openWhatsapp(numero) {
-  if (!numero) { alert("Este cliente não tem número de WhatsApp cadastrado."); return; }
-  window.open(`https://wa.me/${numero}`, "_blank");
+  const digitos = String(numero || "").replace(/\D/g, "");
+  if (!digitos) { alert("Este cliente não tem número de WhatsApp cadastrado."); return; }
+  window.open(`https://wa.me/${digitos}`, "_blank");
 }
 
 // ------------------------------------------------------------------
 // VIEW: Lista de clientes
 // ------------------------------------------------------------------
+let CLIENTE_SEARCH_TIMER = null;
+function onClienteSearchInput() {
+  // debounce: espera o usuário parar de digitar antes de consultar a API
+  clearTimeout(CLIENTE_SEARCH_TIMER);
+  CLIENTE_SEARCH_TIMER = setTimeout(loadClientesView, 300);
+}
+
 async function loadClientesView() {
   const tbody = document.getElementById("clientesTableBody");
   tbody.innerHTML = `<tr><td colspan="7" style="color:var(--text-muted);">carregando…</td></tr>`;
   const mostrarInativos = document.getElementById("toggleInativos").checked;
+  const busca = (document.getElementById("clienteSearch").value || "").trim();
   const params = [];
   if (CURRENT_USER.role === "admin" && ADMIN_SCOPE_ALL) params.push("scope=all");
   if (mostrarInativos) params.push("incluir_inativos=1");
+  if (busca) params.push("q=" + encodeURIComponent(busca));
   const qs = params.length ? "?" + params.join("&") : "";
   const clientes = await api("/customers" + qs);
+  if (busca !== (document.getElementById("clienteSearch").value || "").trim()) return; // resposta antiga, descarta
   const verTodos = mostrandoTodos();
   document.getElementById("theadClientes").innerHTML = verTodos
     ? `<tr><th>Nome</th><th>Status</th><th>Responsável</th><th>Cidade/UF</th><th>Última compra</th><th>WhatsApp</th><th></th></tr>`
     : `<tr><th>Nome</th><th>Status</th><th>Cidade/UF</th><th>Última compra</th><th>WhatsApp</th><th></th></tr>`;
   if (!clientes.length) {
-    tbody.innerHTML = `<tr><td colspan="7" style="color:var(--text-muted);">Nenhum cliente cadastrado ainda. Use "+ Novo cliente".</td></tr>`;
+    tbody.innerHTML = busca
+      ? `<tr><td colspan="7" style="color:var(--text-muted);">Nenhum cliente encontrado para "${esc(busca)}".</td></tr>`
+      : `<tr><td colspan="7" style="color:var(--text-muted);">Nenhum cliente cadastrado ainda. Use "+ Novo cliente".</td></tr>`;
     return;
   }
   tbody.innerHTML = clientes.map(c => `
     <tr onclick="showView('dashboard'); showCustomer('${c.id}')" style="${c.ativo ? "" : "opacity:.55;"}">
-      <td>${c.nome} ${!c.ativo ? `<span class="pill perdido">inativo</span>` : ""}</td>
-      <td><span class="pill ${c.status_fidelidade}">${c.status_fidelidade}</span></td>
-      ${verTodos ? `<td>${c.responsavel_nome || "—"}</td>` : ""}
-      <td>${[c.cidade, c.estado].filter(Boolean).join("/") || "—"}</td>
+      <td>${esc(c.nome)} ${!c.ativo ? `<span class="pill perdido">inativo</span>` : ""}</td>
+      <td><span class="pill ${esc(c.status_fidelidade)}">${esc(c.status_fidelidade)}</span></td>
+      ${verTodos ? `<td>${esc(c.responsavel_nome || "—")}</td>` : ""}
+      <td>${esc([c.cidade, c.estado].filter(Boolean).join("/") || "—")}</td>
       <td>${c.data_ultima_compra ? new Date(c.data_ultima_compra).toLocaleDateString("pt-BR") : "—"}</td>
-      <td>${c.whatsapp_id || "—"}</td>
+      <td>${esc(c.whatsapp_id || "—")}</td>
       <td onclick="event.stopPropagation()">
         <button class="btn-mini" onclick="SELECTED_CUSTOMER_ID='${c.id}'; openModal('editar_cliente')">Editar</button>
         <button class="btn-mini" onclick="toggleClienteAtivo('${c.id}', ${c.ativo ? "false" : "true"})">${c.ativo ? "Desativar" : "Reativar"}</button>
-        <button class="btn-mini" onclick="excluirCliente('${c.id}', '${c.nome.replace(/'/g, "\\'")}')">Excluir</button>
+        <button class="btn-mini" onclick="excluirCliente('${c.id}', ${jsArg(c.nome)})">Excluir</button>
       </td>
     </tr>
   `).join("");
@@ -1145,7 +1175,7 @@ async function loadWhatsappView() {
   }
   list.innerHTML = channels.map(ch => `
     <div class="channel-row">
-      <span>${ch.numero_whatsapp}</span>
+      <span>${esc(ch.numero_whatsapp)}</span>
       <button onclick="removeChannel('${ch.id}')" title="Remover">✕</button>
     </div>
   `).join("");
@@ -1173,11 +1203,11 @@ function recoCardHtml(item) {
   return `
     <div class="reco-card" onclick="showView('dashboard'); showCustomer('${item.customer_id}')">
       <div class="reco-top">
-        <span class="reco-cliente">${item.cliente_nome} <span style="color:var(--text-muted);font-weight:400;">— ${item.titulo}</span></span>
+        <span class="reco-cliente">${esc(item.cliente_nome)} <span style="color:var(--text-muted);font-weight:400;">— ${esc(item.titulo)}</span></span>
         <span class="reco-score ${scoreClass}">${item.score}/100</span>
       </div>
-      ${mostrandoTodos() && item.vendedor_nome ? `<span class="vendor-badge" style="margin-bottom:4px;display:inline-block;">${item.vendedor_nome}</span>` : ""}
-      <div class="reco-texto">${item.top_recomendacao || ""}</div>
+      ${mostrandoTodos() && item.vendedor_nome ? `<span class="vendor-badge" style="margin-bottom:4px;display:inline-block;">${esc(item.vendedor_nome)}</span>` : ""}
+      <div class="reco-texto">${esc(item.top_recomendacao || "")}</div>
     </div>`;
 }
 
@@ -1198,7 +1228,7 @@ async function loadAssistenteView() {
     : `<div class="empty-state">Nenhum negócio em risco agora. Bom sinal ✓</div>`;
 
   document.getElementById("dicasGeraisList").innerHTML =
-    data.dicas_gerais.map(d => `<li>${d}</li>`).join("");
+    data.dicas_gerais.map(d => `<li>${esc(d)}</li>`).join("");
 }
 
 // ------------------------------------------------------------------
@@ -1214,10 +1244,10 @@ async function loadTarefasView() {
   const renderRow = (t, vencida) => `
     <div class="tarefa-row ${vencida ? "vencida" : ""}">
       <div>
-        <div>${vencida ? "⚠ " : "· "}${t.descricao}</div>
-        <div class="tarefa-cliente">${t.cliente_nome || "sem cliente vinculado"} · ${new Date(t.data_lembrete.replace(" ", "T")).toLocaleString("pt-BR")}</div>
+        <div>${vencida ? "⚠ " : "· "}${esc(t.descricao)}</div>
+        <div class="tarefa-cliente">${esc(t.cliente_nome || "sem cliente vinculado")} · ${new Date(t.data_lembrete.replace(" ", "T")).toLocaleString("pt-BR")}</div>
       </div>
-      ${mostrandoTodos() && t.vendedor_nome ? `<span class="vendor-badge">${t.vendedor_nome}</span>` : ""}
+      ${mostrandoTodos() && t.vendedor_nome ? `<span class="vendor-badge">${esc(t.vendedor_nome)}</span>` : ""}
       <button class="btn-mini" onclick="completeTaskFromList('${t.id}')">Concluir</button>
     </div>`;
 
@@ -1251,8 +1281,8 @@ async function loadEquipeView() {
   users.forEach(u => EQUIPE_USERS[u.id] = u);
   tbody.innerHTML = users.map(u => `
     <tr>
-      <td>${u.nome}</td>
-      <td>${u.email}</td>
+      <td>${esc(u.nome)}</td>
+      <td>${esc(u.email)}</td>
       <td>
         <span class="pill">${u.role === "admin" ? "Admin" : "Vendedor(a)"}</span>
         ${!u.ativo ? `<span class="pill perdido">inativo</span>` : ""}
@@ -1379,7 +1409,7 @@ async function populateVendorFilter() {
   if (sel.dataset.loaded) return;
   const usuarios = await api("/users");
   sel.innerHTML = `<option value="self">Meu relatório</option><option value="all">👥 Toda a equipe</option>` +
-    usuarios.filter(u => u.ativo).map(u => `<option value="${u.id}">${u.nome}${u.role === "admin" ? " (admin)" : ""}</option>`).join("");
+    usuarios.filter(u => u.ativo).map(u => `<option value="${esc(u.id)}">${esc(u.nome)}${u.role === "admin" ? " (admin)" : ""}</option>`).join("");
   sel.value = "self";
   sel.addEventListener("change", () => { REPORT_VENDOR_FILTER = sel.value; loadRelatoriosView(); });
   sel.dataset.loaded = "1";
@@ -1415,7 +1445,7 @@ async function loadRelatoriosView() {
     else if (REPORT_TAB === "forecast") await renderReportForecast(content, periodo);
     else if (REPORT_TAB === "origem") await renderReportOrigem(content, periodo);
   } catch (err) {
-    content.innerHTML = `<div class="placeholder-panel">${err.message || "Erro ao carregar relatório."}</div>`;
+    content.innerHTML = `<div class="placeholder-panel">${esc(err.message || "Erro ao carregar relatório.")}</div>`;
   }
 }
 
@@ -1423,7 +1453,7 @@ function barRow(label, valor, valorMax, valorFormatado) {
   const pct = valorMax > 0 ? Math.max(4, Math.round(valor / valorMax * 100)) : 0;
   return `
     <div class="report-bar-row">
-      <div class="report-bar-label">${label}</div>
+      <div class="report-bar-label">${esc(label)}</div>
       <div class="report-bar-track"><div class="report-bar-fill" style="width:${pct}%;"></div></div>
       <div class="report-bar-value">${valorFormatado}</div>
     </div>`;
@@ -1467,7 +1497,7 @@ async function renderReportDesempenho(content, periodo) {
       <tbody>
         ${data.vendedores.map(v => `
           <tr>
-            <td>${v.vendedor_nome}</td>
+            <td>${esc(v.vendedor_nome)}</td>
             <td>${v.ganhos}</td>
             <td>${v.perdidos}</td>
             <td>${v.taxa_conversao}%</td>
@@ -1509,7 +1539,7 @@ async function renderReportAtividades(content, periodo) {
       <tbody>
         ${data.vendedores.map(v => `
           <tr>
-            <td>${v.vendedor_nome}</td>
+            <td>${esc(v.vendedor_nome)}</td>
             <td>${v.reunioes_agendadas}</td>
             <td>${v.reunioes_realizadas}</td>
             <td>${v.propostas_enviadas}</td>
@@ -1541,9 +1571,9 @@ async function renderReportForecast(content, periodo) {
       <tbody>
         ${data.negocios.map(n => `
           <tr>
-            <td>${n.titulo}</td>
-            <td>${n.cliente_nome}</td>
-            ${mostrandoTodos() || REPORT_VENDOR_FILTER === "all" ? `<td>${n.vendedor_nome || "—"}</td>` : ""}
+            <td>${esc(n.titulo)}</td>
+            <td>${esc(n.cliente_nome)}</td>
+            ${mostrandoTodos() || REPORT_VENDOR_FILTER === "all" ? `<td>${esc(n.vendedor_nome || "—")}</td>` : ""}
             <td>${ETAPA_LABEL[n.etapa_funil] || n.etapa_funil}</td>
             <td>R$ ${Number(n.valor_estimado).toLocaleString("pt-BR")}</td>
             <td>${Math.round(n.probabilidade * 100)}%</td>
@@ -1586,13 +1616,13 @@ function delegadaCardHtml(t) {
     actions = `<button class="mini-btn ganho" data-finish="${t.id}">Concluir</button>`;
   }
   const conclusaoHtml = (t.status === "finalizada" && t.descricao_conclusao)
-    ? `<div style="margin-top:6px;font-size:11px;color:var(--text-muted);border-top:1px solid var(--border);padding-top:6px;">"${t.descricao_conclusao}"</div>`
+    ? `<div style="margin-top:6px;font-size:11px;color:var(--text-muted);border-top:1px solid var(--border);padding-top:6px;">"${esc(t.descricao_conclusao)}"</div>`
     : "";
   return `
     <div class="funil-card">
-      <b>${t.titulo}</b> ${t.grupo_id ? `<span class="vendor-badge" title="Esta tarefa foi delegada para toda a equipe; cada vendedor conduz sua própria cópia">👥 equipe</span>` : ""}
-      ${CURRENT_USER.role === "admin" ? `<span class="valor" style="color:var(--text-muted);">→ ${t.atribuido_nome}</span>` : ""}
-      ${t.descricao ? `<div style="font-size:11px;color:var(--text-muted);margin-top:3px;">${t.descricao}</div>` : ""}
+      <b>${esc(t.titulo)}</b> ${t.grupo_id ? `<span class="vendor-badge" title="Esta tarefa foi delegada para toda a equipe; cada vendedor conduz sua própria cópia">👥 equipe</span>` : ""}
+      ${CURRENT_USER.role === "admin" ? `<span class="valor" style="color:var(--text-muted);">→ ${esc(t.atribuido_nome)}</span>` : ""}
+      ${t.descricao ? `<div style="font-size:11px;color:var(--text-muted);margin-top:3px;">${esc(t.descricao)}</div>` : ""}
       ${t.data_prazo ? `<div style="font-size:10px;color:var(--text-muted);font-family:var(--font-mono);margin-top:3px;">prazo: ${new Date(t.data_prazo).toLocaleDateString("pt-BR")}</div>` : ""}
       ${conclusaoHtml}
       ${actions ? `<div class="funil-card-actions">${actions}</div>` : ""}
@@ -1929,7 +1959,7 @@ async function openModal(kind) {
   fieldsBox.innerHTML = fields.map(f => {
     if (f.type === "select") {
       return `<div class="field"><label>${f.label}</label>
-        <select id="modal_${f.name}">${f.options.map(([v,l]) => `<option value="${v}">${l}</option>`).join("")}</select>
+        <select id="modal_${f.name}">${f.options.map(([v,l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join("")}</select>
       </div>`;
     }
     return `<div class="field"><label>${f.label}</label>

@@ -19,6 +19,9 @@ import sqlite3
 import os
 import uuid
 import json
+import time
+import threading
+from collections import defaultdict, deque
 import urllib.request
 import urllib.error
 from datetime import datetime, timedelta, timezone, date
@@ -410,17 +413,70 @@ def build_deal_recommendation(deal, customer, tasks):
 
 
 # ------------------------------------------------------------------
+# Rate limiting do login — proteção contra força bruta.
+# Em memória, o que é adequado ao deploy atual (1 worker no gunicorn).
+# Se um dia escalar para múltiplos workers/instâncias, mover o estado
+# para Redis ou equivalente.
+# ------------------------------------------------------------------
+LOGIN_MAX_FALHAS = 5            # tentativas erradas permitidas…
+LOGIN_JANELA_SEGUNDOS = 15 * 60  # …dentro desta janela (15 min)
+_login_falhas = defaultdict(deque)   # ip -> timestamps (monotonic) das falhas
+_login_lock = threading.Lock()
+
+
+def _client_ip():
+    """IP real do cliente. Atrás do proxy do Render/Heroku ele vem no
+    X-Forwarded-For (primeiro endereço da lista)."""
+    xff = request.headers.get("X-Forwarded-For", "")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.remote_addr or "desconhecido"
+
+
+def _login_bloqueado(ip):
+    """Retorna quantos segundos faltam para o IP poder tentar de novo,
+    ou 0 se ainda está dentro do limite."""
+    agora = time.monotonic()
+    with _login_lock:
+        falhas = _login_falhas[ip]
+        while falhas and agora - falhas[0] > LOGIN_JANELA_SEGUNDOS:
+            falhas.popleft()
+        if len(falhas) >= LOGIN_MAX_FALHAS:
+            return int(LOGIN_JANELA_SEGUNDOS - (agora - falhas[0])) + 1
+    return 0
+
+
+def _login_registrar_falha(ip):
+    with _login_lock:
+        _login_falhas[ip].append(time.monotonic())
+
+
+def _login_limpar(ip):
+    with _login_lock:
+        _login_falhas.pop(ip, None)
+
+
+# ------------------------------------------------------------------
 # Rotas — Auth
 # ------------------------------------------------------------------
 @app.post("/api/auth/login")
 def login():
+    ip = _client_ip()
+    espera = _login_bloqueado(ip)
+    if espera:
+        minutos = max(1, -(-espera // 60))  # arredonda pra cima
+        resp = jsonify({"error": f"Muitas tentativas de login. Aguarde {minutos} minuto(s) e tente novamente."})
+        resp.headers["Retry-After"] = str(espera)
+        return resp, 429
     body = request.get_json(force=True, silent=True) or {}
     email = (body.get("email") or "").strip().lower()
     senha = body.get("senha") or ""
     db = get_db()
     user = db.execute("SELECT * FROM users WHERE email = ? AND ativo = 1", (email,)).fetchone()
     if not user or not check_password_hash(user["senha_hash"], senha):
+        _login_registrar_falha(ip)
         return jsonify({"error": "Email ou senha inválidos."}), 401
+    _login_limpar(ip)
     token = make_token(user["id"])
     return jsonify({
         "token": token,
@@ -524,12 +580,39 @@ def mark_insight_read(insight_id):
 def list_customers():
     db = get_db()
     clause, params = scope_filter_clause("responsavel_id")
+    params = list(params)
     filtro_ativo = "" if request.args.get("incluir_inativos") == "1" else " AND c.ativo = 1"
+
+    # Busca livre (?q=) por nome, email, CPF/CNPJ, cidade, WhatsApp ou telefone.
+    # Curingas do LIKE (% e _) são escapados para a busca ser sempre literal.
+    filtro_busca = ""
+    q = (request.args.get("q") or "").strip()
+    if q:
+        q_like = "%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        filtro_busca = (
+            " AND (c.nome LIKE ? ESCAPE '\\' OR c.email LIKE ? ESCAPE '\\'"
+            " OR c.cpf_cnpj LIKE ? ESCAPE '\\' OR c.cidade LIKE ? ESCAPE '\\'"
+            " OR c.whatsapp_id LIKE ? ESCAPE '\\' OR c.telefone LIKE ? ESCAPE '\\')"
+        )
+        params += [q_like] * 6
+
+    # Paginação opcional (?limit=&offset=). Sem limit, mantém o comportamento
+    # atual de retornar tudo — os seletores de cliente do frontend dependem disso.
+    try:
+        limit = int(request.args.get("limit", 0))
+        offset = int(request.args.get("offset", 0))
+    except (TypeError, ValueError):
+        limit, offset = 0, 0
+    clausula_limite = ""
+    if limit > 0:
+        clausula_limite = " LIMIT ? OFFSET ?"
+        params += [limit, max(0, offset)]
+
     rows = db.execute(f"""
         SELECT c.*, u.nome as responsavel_nome FROM customers c
         LEFT JOIN users u ON u.id = c.responsavel_id
-        WHERE 1=1 {clause}{filtro_ativo}
-        ORDER BY c.nome
+        WHERE 1=1 {clause}{filtro_ativo}{filtro_busca}
+        ORDER BY c.nome{clausula_limite}
     """, params).fetchall()
     return jsonify([dict(r) for r in rows])
 
