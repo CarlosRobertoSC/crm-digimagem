@@ -64,6 +64,9 @@ CREATE TABLE IF NOT EXISTS deal_stage_history (
     etapa_anterior  TEXT,
     etapa_nova      TEXT NOT NULL,
     user_id         TEXT REFERENCES users(id),
+    -- preenchidos apenas quando etapa_nova = 'fechado_perdido':
+    motivo_perda         TEXT,
+    motivo_perda_detalhe TEXT,
     data_transicao  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

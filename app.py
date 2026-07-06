@@ -886,9 +886,13 @@ def move_deal_stage(deal_id):
     """, (nova_etapa, status, now_iso(), now_iso(), motivo_perda, motivo_perda_detalhe, deal_id))
 
     db.execute("""
-        INSERT INTO deal_stage_history (id, deal_id, etapa_anterior, etapa_nova, user_id, data_transicao)
-        VALUES (?,?,?,?,?,?)
-    """, (new_id(), deal_id, existing["etapa_funil"], nova_etapa, g.current_user["id"], now_iso()))
+        INSERT INTO deal_stage_history (id, deal_id, etapa_anterior, etapa_nova, user_id,
+                                        motivo_perda, motivo_perda_detalhe, data_transicao)
+        VALUES (?,?,?,?,?,?,?,?)
+    """, (new_id(), deal_id, existing["etapa_funil"], nova_etapa, g.current_user["id"],
+          motivo_perda if nova_etapa == "fechado_perdido" else None,
+          motivo_perda_detalhe if nova_etapa == "fechado_perdido" else None,
+          now_iso()))
 
     audit("update", "deals", deal_id, {"nova_etapa": nova_etapa, "motivo_perda": motivo_perda})
     db.commit()
@@ -959,7 +963,8 @@ def deal_historico(deal_id):
           "nota_tipo": n["tipo"], "tem_anexo": bool(n["tem_anexo"]), "data": n["created_at"]}
          for n in notas]
         + [{"tipo": "etapa", "etapa_anterior": e["etapa_anterior"], "etapa_nova": e["etapa_nova"],
-            "autor_nome": e["autor_nome"], "data": e["data_transicao"]}
+            "autor_nome": e["autor_nome"], "data": e["data_transicao"],
+            "motivo_perda": e["motivo_perda"], "motivo_perda_detalhe": e["motivo_perda_detalhe"]}
            for e in etapas]
     )
     eventos.sort(key=lambda ev: (ev["data"], 0 if ev["tipo"] == "etapa" else 1))
@@ -1771,6 +1776,10 @@ def migrate_missing_columns(conn):
         "deal_notes": {
             "tipo": "TEXT NOT NULL DEFAULT 'nota'",
             "tem_anexo": "INTEGER NOT NULL DEFAULT 0",
+        },
+        "deal_stage_history": {
+            "motivo_perda": "TEXT",
+            "motivo_perda_detalhe": "TEXT",
         },
     }
     for tabela, colunas in tabelas_e_colunas.items():

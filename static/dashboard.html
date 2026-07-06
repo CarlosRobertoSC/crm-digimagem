@@ -195,6 +195,12 @@
   .hist-event:last-child::before{display:none;}
   .hist-dot{position:absolute;left:0;top:2px;width:18px;height:18px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:9px;}
   .hist-event.etapa .hist-dot{background:var(--signal-soft);border:1px solid var(--signal);}
+  .hist-event.etapa.ganho .hist-dot{background:rgba(37,211,102,.15);border-color:#1fbf63;}
+  .hist-event.etapa.ganho .hist-etapa-label b{color:#1fbf63;}
+  .hist-event.etapa.perdido .hist-dot{background:rgba(255,80,80,.12);border-color:var(--urgent);}
+  .hist-event.etapa.perdido .hist-etapa-label b{color:var(--urgent);}
+  .hist-motivo-perda{font-size:11.5px;color:var(--text-muted);margin-top:3px;line-height:1.5;}
+  .hist-motivo-perda b{color:var(--urgent);font-weight:600;}
   .hist-event.nota .hist-dot{background:var(--surface-raised);border:1px solid var(--border);}
   .hist-etapa-label{font-size:12.5px;padding-top:2px;}
   .hist-etapa-label b{color:var(--signal);}
@@ -1398,6 +1404,7 @@ const MOTIVO_PERDA_OPTIONS = [
   ["sumiu_no_show", "Sumiu/não respondeu (no-show)"], ["sem_orcamento", "Sem orçamento"],
   ["timing_errado", "Timing errado"], ["outro", "Outro"],
 ];
+const MOTIVO_PERDA_LABEL = Object.fromEntries(MOTIVO_PERDA_OPTIONS);
 
 function _ultimoDiaMes(ano, mes) {
   return new Date(ano, mes, 0).getDate();
@@ -1837,10 +1844,24 @@ async function renderHistorico() {
     const quando = fmtDataHist(ev.data);
     if (ev.tipo === "etapa") {
       const de = ev.etapa_anterior ? `${esc(ETAPA_LABEL[ev.etapa_anterior] || ev.etapa_anterior)} → ` : "Negócio criado em ";
+      const classeFechamento = ev.etapa_nova === "fechado_ganho" ? " ganho"
+        : (ev.etapa_nova === "fechado_perdido" ? " perdido" : "");
+      const icone = ev.etapa_nova === "fechado_ganho" ? "✓" : (ev.etapa_nova === "fechado_perdido" ? "✕" : "◆");
+      // motivo gravado no próprio marco; negócios perdidos antes desta versão
+      // caem no fallback do motivo salvo no negócio
+      let motivoHtml = "";
+      if (ev.etapa_nova === "fechado_perdido") {
+        const motivo = ev.motivo_perda || (d.status === "perdido" ? d.motivo_perda : null);
+        const detalhe = ev.motivo_perda_detalhe || (d.status === "perdido" ? d.motivo_perda_detalhe : null);
+        if (motivo) {
+          motivoHtml = `<div class="hist-motivo-perda">motivo: <b>${esc(MOTIVO_PERDA_LABEL[motivo] || motivo)}</b>${detalhe ? " — " + esc(detalhe) : ""}</div>`;
+        }
+      }
       return `
-        <div class="hist-event etapa">
-          <div class="hist-dot">◆</div>
+        <div class="hist-event etapa${classeFechamento}">
+          <div class="hist-dot">${icone}</div>
           <div class="hist-etapa-label">${de}<b>${esc(ETAPA_LABEL[ev.etapa_nova] || ev.etapa_nova)}</b></div>
+          ${motivoHtml}
           <div class="hist-meta">${quando}${ev.autor_nome ? " · por " + esc(ev.autor_nome) : ""}</div>
         </div>`;
     }
