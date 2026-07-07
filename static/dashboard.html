@@ -228,6 +228,17 @@
   .hist-tipo-btn.active{color:var(--text-primary);border-color:var(--signal);background:var(--signal-soft);}
   .hist-anexo-chip{display:none;align-items:center;gap:6px;font-size:10.5px;font-family:var(--font-mono);color:var(--text-muted);border:1px dashed var(--border);border-radius:20px;padding:4px 10px;max-width:100%;overflow:hidden;}
   .hist-anexo-chip button{background:none;border:none;color:var(--urgent);cursor:pointer;font-size:12px;padding:0;line-height:1;}
+
+  /* ---------- LEMBRETES DE TAREFAS NO FEED DE ALERTAS ---------- */
+  .lembretes-box{background:var(--surface-raised);border:1px solid var(--border);border-left:3px solid var(--signal);border-radius:10px;padding:10px 12px;margin-bottom:12px;}
+  .lembretes-title{font-size:10.5px;font-family:var(--font-mono);text-transform:uppercase;letter-spacing:.5px;color:var(--text-muted);margin-bottom:6px;}
+  .lembrete-item{display:flex;align-items:baseline;gap:8px;font-size:12px;padding:5px 0;border-top:1px dashed var(--border);cursor:pointer;}
+  .lembrete-item:first-of-type{border-top:none;}
+  .lembrete-item:hover .lembrete-desc{color:var(--signal);}
+  .lembrete-hora{font-family:var(--font-mono);font-size:10.5px;color:var(--signal);white-space:nowrap;}
+  .lembrete-hora.vencida{color:var(--urgent);}
+  .lembrete-desc{color:var(--text-primary);opacity:.88;line-height:1.45;}
+  .lembrete-origem{font-size:10px;color:var(--text-muted);font-family:var(--font-mono);}
   .modal-actions{display:flex;gap:8px;margin-top:16px;flex-shrink:0;}
   .modal-actions .btn-primary{flex:1;justify-content:center;}
   .modal-cancel{
@@ -936,14 +947,54 @@ async function loadStats() {
   document.getElementById("statParados").textContent = s.deals_parados;
 }
 
+function renderLembretes(feed, data) {
+  const itens = [];
+  data.compromissos.forEach(t => {
+    const quando = new Date(t.data_lembrete.replace(" ", "T"));
+    itens.push({
+      hora: "⏰ " + quando.toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }),
+      vencida: false,
+      desc: `${esc(t.descricao)}${t.cliente_nome ? ` <span class="lembrete-origem">— ${esc(t.cliente_nome)}</span>` : ""}`,
+      onClick: t.customer_id ? () => showCustomer(t.customer_id) : () => showView("tarefas"),
+    });
+  });
+  data.delegadas.forEach(t => {
+    const vencida = t.data_prazo < data.hoje;
+    const dataFmt = t.data_prazo.split("-").reverse().slice(0, 2).join("/");
+    itens.push({
+      hora: vencida ? `▣ venceu ${dataFmt}` : `▣ prazo ${dataFmt}`,
+      vencida,
+      desc: `${esc(t.titulo)} <span class="lembrete-origem">· delegada por ${esc(t.criado_por_nome)}</span>`,
+      onClick: () => showView("delegadas"),
+    });
+  });
+  if (!itens.length) return;
+  const box = document.createElement("div");
+  box.className = "lembretes-box";
+  box.innerHTML = `<div class="lembretes-title">📌 Suas tarefas — hoje e amanhã</div>`;
+  itens.forEach(it => {
+    const row = document.createElement("div");
+    row.className = "lembrete-item";
+    row.innerHTML = `<span class="lembrete-hora${it.vencida ? " vencida" : ""}">${it.hora}</span><span class="lembrete-desc">${it.desc}</span>`;
+    row.addEventListener("click", it.onClick);
+    box.appendChild(row);
+  });
+  feed.appendChild(box);
+}
+
 async function loadAlerts() {
   const feed = document.getElementById("alertFeed");
   const sub = document.getElementById("alertFeedSub");
   feed.innerHTML = "";
-  const alerts = await api("/insights" + scopeQuery());
-  sub.textContent = alerts.length + " alerta(s) ativo(s)";
+  const [alerts, lembretes] = await Promise.all([
+    api("/insights" + scopeQuery()),
+    api("/lembretes"),
+  ]);
+  const qtdLembretes = lembretes.compromissos.length + lembretes.delegadas.length;
+  sub.textContent = alerts.length + " alerta(s) ativo(s)" + (qtdLembretes ? ` · ${qtdLembretes} tarefa(s) sua(s)` : "");
+  renderLembretes(feed, lembretes);
   if (alerts.length === 0) {
-    feed.innerHTML = `<div class="empty-state">Nenhum alerta ativo agora. Tudo em dia ✓</div>`;
+    if (!qtdLembretes) feed.innerHTML = `<div class="empty-state">Nenhum alerta ativo agora. Tudo em dia ✓</div>`;
     return;
   }
   alerts.forEach(a => {
@@ -1703,7 +1754,7 @@ function delegadaCardHtml(t) {
     : "";
   return `
     <div class="funil-card">
-      <b>${esc(t.titulo)}</b> ${t.grupo_id ? `<span class="vendor-badge" title="Esta tarefa foi delegada para toda a equipe; cada vendedor conduz sua própria cópia">👥 equipe</span>` : ""}
+      <b>${esc(t.titulo)}</b> ${t.grupo_id ? `<span class="vendor-badge" title="Tarefa delegada em grupo; cada pessoa conduz sua própria cópia">👥 equipe</span>` : ""}
       ${CURRENT_USER.role === "admin" ? `<span class="valor" style="color:var(--text-muted);">→ ${esc(t.atribuido_nome)}</span>` : ""}
       ${t.descricao ? `<div style="font-size:11px;color:var(--text-muted);margin-top:3px;">${esc(t.descricao)}</div>` : ""}
       ${t.data_prazo ? `<div style="font-size:10px;color:var(--text-muted);font-family:var(--font-mono);margin-top:3px;">prazo: ${new Date(t.data_prazo).toLocaleDateString("pt-BR")}</div>` : ""}
@@ -2116,8 +2167,11 @@ const MODAL_CONFIG = {
     title: "Nova tarefa delegada",
     fields: [],
     submit: async (values) => {
-      if (values.atribuido_para === "__todos__") {
-        values.atribuir_todos = true;
+      if (values.atribuido_para === "__vendedores__") {
+        values.atribuir_equipe = "vendedores";
+        delete values.atribuido_para;
+      } else if (values.atribuido_para === "__todos__") {
+        values.atribuir_equipe = "todos";
         delete values.atribuido_para;
       }
       return api("/delegated-tasks", { method: "POST", body: JSON.stringify(values) });
@@ -2235,7 +2289,8 @@ async function openModal(kind) {
       { name: "descricao", label: "Descrição (opcional)", type: "text" },
       { name: "atribuido_para", label: "Atribuir para", type: "select",
         options: [
-          ["__todos__", `👥 Toda a equipe (${vendedoresAtivos.length} vendedor${vendedoresAtivos.length === 1 ? "" : "es"})`],
+          ["__vendedores__", `👥 Equipe de vendedores (${vendedoresAtivos.length})`],
+          ["__todos__", `👥 Toda a equipe — vendedores + admins (${usuarios.filter(u => u.ativo).length})`],
           ...usuarios.filter(u => u.ativo).map(u => [u.id, u.nome + (u.role === "admin" ? " (admin)" : "")]),
         ] },
       { name: "data_prazo", label: "Prazo (opcional)", type: "date" },

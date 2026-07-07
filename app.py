@@ -1387,14 +1387,23 @@ def create_delegated_task():
         return jsonify({"error": "titulo é obrigatório."}), 400
     db = get_db()
 
-    if body.get("atribuir_todos"):
-        # Delega para toda a equipe: cada vendedor ativo recebe sua própria cópia
-        # da tarefa, identificada pelo mesmo grupo_id, e conduz o fluxo independente.
-        destinatarios = db.execute(
-            "SELECT id FROM users WHERE role = 'vendedor' AND ativo = 1"
-        ).fetchall()
+    # Delegação em grupo: 'vendedores' (só a equipe de vendas) ou 'todos'
+    # (equipe completa, incluindo administradores). Cada pessoa recebe a
+    # própria cópia, identificada pelo mesmo grupo_id, e conduz o fluxo
+    # de forma independente. 'atribuir_todos' é aceito por compatibilidade
+    # com a versão anterior (equivale a 'vendedores').
+    equipe = body.get("atribuir_equipe") or ("vendedores" if body.get("atribuir_todos") else None)
+    if equipe:
+        if equipe not in ("vendedores", "todos"):
+            return jsonify({"error": "Grupo inválido: use 'vendedores' ou 'todos'."}), 400
+        if equipe == "todos":
+            destinatarios = db.execute("SELECT id FROM users WHERE ativo = 1").fetchall()
+        else:
+            destinatarios = db.execute(
+                "SELECT id FROM users WHERE role = 'vendedor' AND ativo = 1"
+            ).fetchall()
         if not destinatarios:
-            return jsonify({"error": "Não há vendedores ativos para atribuir a tarefa."}), 400
+            return jsonify({"error": "Não há usuários ativos para atribuir a tarefa."}), 400
         grupo_id = new_id()
         ids_criados = []
         for u in destinatarios:
@@ -1405,12 +1414,16 @@ def create_delegated_task():
             """, (tid, body["titulo"], body.get("descricao"), g.current_user["id"], u["id"],
                   body.get("customer_id"), body.get("data_prazo"), grupo_id))
             ids_criados.append(tid)
-        audit("create", "delegated_tasks", grupo_id, {**body, "equipe_toda": True, "qtd": len(ids_criados)})
+        audit("create", "delegated_tasks", grupo_id, {**body, "equipe": equipe, "qtd": len(ids_criados)})
         db.commit()
         return jsonify({"grupo_id": grupo_id, "ids": ids_criados, "qtd_atribuidos": len(ids_criados)}), 201
 
     if not body.get("atribuido_para"):
-        return jsonify({"error": "Escolha um vendedor ou marque 'toda a equipe'."}), 400
+        return jsonify({"error": "Escolha um responsável ou uma das opções de equipe."}), 400
+    destino = db.execute("SELECT id FROM users WHERE id = ? AND ativo = 1",
+                         (body["atribuido_para"],)).fetchone()
+    if not destino:
+        return jsonify({"error": "Responsável inválido ou inativo."}), 400
     tid = new_id()
     db.execute("""
         INSERT INTO delegated_tasks (id, titulo, descricao, criado_por, atribuido_para, customer_id, data_prazo)
@@ -1471,6 +1484,47 @@ def update_delegated_task_status(task_id):
     audit("update", "delegated_tasks", task_id, {"status": novo_status})
     db.commit()
     return jsonify({"ok": True})
+
+
+@app.get("/api/lembretes")
+@login_required
+def list_lembretes():
+    """Lembretes pessoais de tarefas para o Feed de Alertas. São SEMPRE do
+    próprio usuário logado — por isso as regras de visibilidade se resolvem
+    sozinhas: vendedor vê os próprios compromissos e as tarefas que o admin
+    delegou a ele; admin vê as suas (inclusive as trocadas entre admins);
+    ninguém vê lembrete de outra pessoa.
+    - Compromissos: os que vencem nas próximas 24h. Os já vencidos NÃO
+      entram aqui — viram o alerta 'compromisso esquecido' pelo motor de
+      alertas, sem duplicar.
+    - Delegadas: pendentes com prazo até amanhã, incluindo as vencidas
+      (que o motor de alertas não cobre)."""
+    db = get_db()
+    uid = g.current_user["id"]
+    agora = now_iso()
+    limite_24h = (datetime.now(timezone.utc) + timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
+    compromissos = db.execute("""
+        SELECT t.*, c.nome as cliente_nome FROM tasks t
+        LEFT JOIN customers c ON c.id = t.customer_id
+        WHERE t.user_id = ? AND t.executado = 0
+          AND t.data_lembrete > ? AND t.data_lembrete <= ?
+        ORDER BY t.data_lembrete
+    """, (uid, agora, limite_24h)).fetchall()
+    ate_amanha = (datetime.now(timezone.utc) + timedelta(days=1)).strftime("%Y-%m-%d")
+    delegadas = db.execute("""
+        SELECT dt.*, cr.nome as criado_por_nome, c.nome as cliente_nome
+        FROM delegated_tasks dt
+        JOIN users cr ON cr.id = dt.criado_por
+        LEFT JOIN customers c ON c.id = dt.customer_id
+        WHERE dt.atribuido_para = ? AND dt.status != 'finalizada'
+          AND dt.data_prazo IS NOT NULL AND dt.data_prazo <= ?
+        ORDER BY dt.data_prazo
+    """, (uid, ate_amanha)).fetchall()
+    return jsonify({
+        "hoje": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        "compromissos": [dict(r) for r in compromissos],
+        "delegadas": [dict(r) for r in delegadas],
+    })
 
 
 # ------------------------------------------------------------------
