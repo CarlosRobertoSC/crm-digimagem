@@ -239,6 +239,16 @@
   .lembrete-hora.vencida{color:var(--urgent);}
   .lembrete-desc{color:var(--text-primary);opacity:.88;line-height:1.45;}
   .lembrete-origem{font-size:10px;color:var(--text-muted);font-family:var(--font-mono);}
+
+  /* ---------- TAREFAS CONCLUÍDAS ---------- */
+  .concluidas-bar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:4px 0 8px;}
+  .concluidas-bar label{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text-muted);font-family:var(--font-mono);cursor:pointer;}
+  .btn-excluir{background:none;border:1px solid var(--urgent);color:var(--urgent);border-radius:8px;font-size:11px;padding:5px 12px;cursor:pointer;transition:.15s;}
+  .btn-excluir:disabled{opacity:.35;cursor:default;}
+  .btn-excluir:not(:disabled):hover{background:rgba(255,80,80,.1);}
+  .tarefa-row.concluida{opacity:.8;}
+  .tarefa-row.concluida input[type=checkbox]{cursor:pointer;flex-shrink:0;accent-color:var(--urgent);}
+  .tarefa-nota{font-size:11.5px;color:var(--text-muted);margin-top:4px;line-height:1.5;border-left:2px solid var(--border);padding-left:8px;}
   .modal-actions{display:flex;gap:8px;margin-top:16px;flex-shrink:0;}
   .modal-actions .btn-primary{flex:1;justify-content:center;}
   .modal-cancel{
@@ -663,6 +673,7 @@
         </div>
         <div id="tarefasVencidas"></div>
         <div id="tarefasFuturas"></div>
+        <div id="tarefasConcluidas"></div>
       </div>
     </div>
 
@@ -1208,10 +1219,13 @@ async function showCustomer(customerId) {
   `;
 }
 
-async function completeTask(taskId, customerId) {
-  await api(`/tasks/${taskId}/complete`, { method: "POST" });
-  showCustomer(customerId);
-  refreshAll();
+let SELECTED_COMPLETE_TASK_ID = null;
+let SELECTED_COMPLETE_CUSTOMER_ID = null;
+
+function completeTask(taskId, customerId) {
+  SELECTED_COMPLETE_TASK_ID = taskId;
+  SELECTED_COMPLETE_CUSTOMER_ID = customerId || null;
+  openModal("concluir_compromisso");
 }
 
 function openWhatsapp(numero) {
@@ -1393,12 +1407,61 @@ async function loadTarefasView() {
   futurasBox.innerHTML = futuras.length
     ? `<div class="tarefas-section-title">Próximas (${futuras.length})</div>` + futuras.map(t => renderRow(t, false)).join("")
     : (vencidas.length ? "" : `<div class="empty-state">Nenhum compromisso pendente. Use "+ Novo compromisso" para agendar um follow-up.</div>`);
+
+  renderConcluidas(tasks.filter(t => t.executado));
 }
 
-async function completeTaskFromList(taskId) {
-  await api(`/tasks/${taskId}/complete`, { method: "POST" });
-  loadTarefasView();
-  refreshAll();
+function renderConcluidas(concluidas) {
+  const box = document.getElementById("tarefasConcluidas");
+  if (!concluidas.length) { box.innerHTML = ""; return; }
+  // mais recentes no topo
+  concluidas.sort((a, b) =>
+    (b.executado_em || b.created_at || "").localeCompare(a.executado_em || a.created_at || ""));
+  box.innerHTML = `
+    <div class="tarefas-section-title" style="margin-top:16px;">Concluídas (${concluidas.length})</div>
+    <div class="concluidas-bar">
+      <label><input type="checkbox" id="selTodasConcluidas" onchange="selecionarTodasConcluidas(this.checked)"> selecionar todas</label>
+      <button class="btn-excluir" id="btnExcluirConcluidas" disabled onclick="excluirTarefasSelecionadas()">🗑 Excluir selecionadas</button>
+    </div>
+    ${concluidas.map(t => `
+      <div class="tarefa-row concluida">
+        <input type="checkbox" class="sel-concluida" value="${esc(t.id)}" onchange="atualizarBarraExclusao()">
+        <div style="flex:1;">
+          <div>✓ ${esc(t.descricao)}</div>
+          <div class="tarefa-cliente">${esc(t.cliente_nome || "sem cliente vinculado")} · concluída em ${t.executado_em ? new Date(t.executado_em.replace(" ", "T") + "Z").toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", year: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—"}</div>
+          ${t.nota_conclusao ? `<div class="tarefa-nota">💬 ${esc(t.nota_conclusao)}</div>` : ""}
+        </div>
+        ${mostrandoTodos() && t.vendedor_nome ? `<span class="vendor-badge">${esc(t.vendedor_nome)}</span>` : ""}
+      </div>`).join("")}
+  `;
+}
+
+function selecionarTodasConcluidas(marcar) {
+  document.querySelectorAll(".sel-concluida").forEach(cb => cb.checked = marcar);
+  atualizarBarraExclusao();
+}
+
+function atualizarBarraExclusao() {
+  const sel = document.querySelectorAll(".sel-concluida:checked").length;
+  const btn = document.getElementById("btnExcluirConcluidas");
+  btn.disabled = sel === 0;
+  btn.textContent = sel ? `🗑 Excluir selecionadas (${sel})` : "🗑 Excluir selecionadas";
+}
+
+async function excluirTarefasSelecionadas() {
+  const ids = [...document.querySelectorAll(".sel-concluida:checked")].map(cb => cb.value);
+  if (!ids.length) return;
+  if (!confirm(`Excluir ${ids.length} tarefa(s) concluída(s) do sistema?\n\nAs anotações delas também serão apagadas. Essa ação não pode ser desfeita.`)) return;
+  try {
+    await api("/tasks/excluir", { method: "POST", body: JSON.stringify({ ids }) });
+    loadTarefasView();
+  } catch (err) {
+    alert(err.message || "Erro ao excluir.");
+  }
+}
+
+function completeTaskFromList(taskId) {
+  completeTask(taskId, null);
 }
 
 // ------------------------------------------------------------------
@@ -2187,6 +2250,20 @@ const MODAL_CONFIG = {
       method: "PUT", body: JSON.stringify({ status: "finalizada", descricao_conclusao: values.descricao_conclusao }),
     }),
     onSuccess: async () => { loadDelegadasView(); },
+  },
+  concluir_compromisso: {
+    title: "Concluir compromisso",
+    fields: [
+      { name: "nota_conclusao", label: "Anotação (opcional) — algo que você queira lembrar depois", type: "text" },
+    ],
+    submit: async (values) => api(`/tasks/${SELECTED_COMPLETE_TASK_ID}/complete`, {
+      method: "POST", body: JSON.stringify(values),
+    }),
+    onSuccess: async () => {
+      if (SELECTED_COMPLETE_CUSTOMER_ID) showCustomer(SELECTED_COMPLETE_CUSTOMER_ID);
+      if (CURRENT_VIEW === "tarefas") loadTarefasView();
+      refreshAll();
+    },
   },
 };
 

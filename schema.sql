@@ -112,6 +112,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     data_lembrete   TEXT NOT NULL,
     executado       INTEGER NOT NULL DEFAULT 0,
     executado_em    TEXT,
+    nota_conclusao  TEXT,   -- anotação opcional feita ao concluir
     created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

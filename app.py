@@ -1250,10 +1250,44 @@ def complete_task(task_id):
         return jsonify({"error": "Compromisso não encontrado."}), 404
     if g.current_user["role"] != "admin" and existing["user_id"] != g.current_user["id"]:
         return jsonify({"error": "Sem permissão para concluir este compromisso."}), 403
-    db.execute("UPDATE tasks SET executado = 1, executado_em = ? WHERE id = ?", (now_iso(), task_id))
-    audit("update", "tasks", task_id, {"executado": True})
+    body = request.get_json(force=True, silent=True) or {}
+    nota = (body.get("nota_conclusao") or "").strip() or None
+    if nota and len(nota) > 2000:
+        return jsonify({"error": "A anotação é longa demais (máximo de 2.000 caracteres)."}), 400
+    db.execute("UPDATE tasks SET executado = 1, executado_em = ?, nota_conclusao = ? WHERE id = ?",
+               (now_iso(), nota, task_id))
+    audit("update", "tasks", task_id, {"executado": True, "com_nota": bool(nota)})
     db.commit()
     return jsonify({"ok": True})
+
+
+@app.post("/api/tasks/excluir")
+@login_required
+def delete_completed_tasks():
+    """Exclui em lote compromissos JÁ CONCLUÍDOS — limpeza da lista e do
+    banco. Vendedor só exclui os próprios; admin exclui qualquer um.
+    Compromissos pendentes nunca são excluídos por esta rota (a cláusula
+    executado = 1 garante isso mesmo se o id de um pendente for enviado)."""
+    body = request.get_json(force=True, silent=True) or {}
+    ids = body.get("ids") or []
+    if not isinstance(ids, list) or not ids:
+        return jsonify({"error": "Informe a lista de compromissos a excluir."}), 400
+    if len(ids) > 500:
+        return jsonify({"error": "Exclua no máximo 500 compromissos por vez."}), 400
+    db = get_db()
+    placeholders = ",".join("?" * len(ids))
+    params = list(ids)
+    filtro_dono = ""
+    if g.current_user["role"] != "admin":
+        filtro_dono = " AND user_id = ?"
+        params.append(g.current_user["id"])
+    cur = db.execute(
+        f"DELETE FROM tasks WHERE id IN ({placeholders}) AND executado = 1{filtro_dono}",
+        params,
+    )
+    audit("delete", "tasks", "lote", {"solicitadas": len(ids), "excluidas": cur.rowcount})
+    db.commit()
+    return jsonify({"excluidas": cur.rowcount})
 
 
 # ------------------------------------------------------------------
@@ -1879,6 +1913,7 @@ def migrate_missing_columns(conn):
         },
         "tasks": {
             "tipo_atividade": "TEXT NOT NULL DEFAULT 'outro'",
+            "nota_conclusao": "TEXT",
         },
         "deal_notes": {
             "tipo": "TEXT NOT NULL DEFAULT 'nota'",
