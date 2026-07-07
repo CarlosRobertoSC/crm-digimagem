@@ -869,6 +869,11 @@ def move_deal_stage(deal_id):
     status = "aberto"
     motivo_perda = existing["motivo_perda"]
     motivo_perda_detalhe = existing["motivo_perda_detalhe"]
+    if nova_etapa not in ("fechado_ganho", "fechado_perdido"):
+        # Movimentação para etapa aberta (inclui reabertura): o motivo da
+        # perda sai do negócio — ele permanece registrado no marco "Perdido"
+        # da linha do tempo (deal_stage_history.motivo_perda).
+        motivo_perda, motivo_perda_detalhe = None, None
     if nova_etapa == "fechado_ganho":
         status = "ganho"
         motivo_perda, motivo_perda_detalhe = None, None
@@ -897,6 +902,54 @@ def move_deal_stage(deal_id):
     audit("update", "deals", deal_id, {"nova_etapa": nova_etapa, "motivo_perda": motivo_perda})
     db.commit()
     return jsonify({"ok": True})
+
+
+@app.post("/api/deals/<deal_id>/reabrir")
+@login_required
+def reopen_deal(deal_id):
+    """Reabre um negócio marcado como perdido: ele volta ao funil na etapa
+    em que estava antes de ser perdido (fallback: negociação). O motivo da
+    perda continua registrado no marco 'Perdido' da linha do tempo — nada
+    da história se perde. Permissão: dono do negócio ou admin."""
+    db = get_db()
+    existing = db.execute("SELECT * FROM deals WHERE id = ?", (deal_id,)).fetchone()
+    if not existing:
+        return jsonify({"error": "Negócio não encontrado."}), 404
+    if g.current_user["role"] != "admin" and existing["user_id"] != g.current_user["id"]:
+        return jsonify({"error": "Sem permissão para alterar este negócio."}), 403
+    if existing["status"] != "perdido":
+        return jsonify({"error": "Só é possível reabrir negócios marcados como perdidos."}), 400
+
+    ultima_perda = db.execute("""
+        SELECT * FROM deal_stage_history
+        WHERE deal_id = ? AND etapa_nova = 'fechado_perdido'
+        ORDER BY data_transicao DESC, rowid DESC LIMIT 1
+    """, (deal_id,)).fetchone()
+
+    # Volta para a etapa em que o negócio estava quando foi perdido
+    etapa_retorno = "negociacao"
+    if ultima_perda and ultima_perda["etapa_anterior"] in ETAPAS             and ultima_perda["etapa_anterior"] not in ("fechado_ganho", "fechado_perdido"):
+        etapa_retorno = ultima_perda["etapa_anterior"]
+
+    # Perdas registradas antes do motivo ser gravado no marco: preserva o
+    # motivo no próprio marco antes de limpá-lo do negócio.
+    if ultima_perda and not ultima_perda["motivo_perda"] and existing["motivo_perda"]:
+        db.execute("""UPDATE deal_stage_history SET motivo_perda = ?, motivo_perda_detalhe = ?
+                      WHERE id = ?""",
+                   (existing["motivo_perda"], existing["motivo_perda_detalhe"], ultima_perda["id"]))
+
+    db.execute("""
+        UPDATE deals SET etapa_funil = ?, status = 'aberto', etapa_atualizada_em = ?, updated_at = ?,
+            motivo_perda = NULL, motivo_perda_detalhe = NULL
+        WHERE id = ?
+    """, (etapa_retorno, now_iso(), now_iso(), deal_id))
+    db.execute("""
+        INSERT INTO deal_stage_history (id, deal_id, etapa_anterior, etapa_nova, user_id, data_transicao)
+        VALUES (?,?,?,?,?,?)
+    """, (new_id(), deal_id, "fechado_perdido", etapa_retorno, g.current_user["id"], now_iso()))
+    audit("update", "deals", deal_id, {"acao": "reabrir", "etapa_retorno": etapa_retorno})
+    db.commit()
+    return jsonify({"ok": True, "etapa_funil": etapa_retorno})
 
 
 @app.get("/api/deals/<deal_id>")

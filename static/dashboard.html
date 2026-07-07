@@ -757,7 +757,8 @@
       <div class="modal-error" id="histError"></div>
       <div class="hist-composer-row">
         <span class="hist-composer-hint" id="histComposerHint"></span>
-        <div style="display:flex;gap:8px;">
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button class="modal-cancel" id="histReabrirBtn" style="display:none;" onclick="reabrirNegocio(HIST_DEAL_ID)">↩ Reabrir negociação</button>
           <button class="modal-cancel" onclick="closeHistorico()">Fechar</button>
           <button class="btn-primary" onclick="salvarNotaHistorico()">💬 Registrar conversa</button>
         </div>
@@ -1074,7 +1075,7 @@ async function loadNegociosView() {
       ${verTodos ? `<td>${esc(d.vendedor_nome || "—")}</td>` : ""}
       <td>R$ ${Number(d.valor_estimado).toLocaleString("pt-BR")}</td>
       <td><span class="pill ${d.status}">${d.status === "ganho" ? "Ganho" : "Perdido"}</span></td>
-      <td onclick="event.stopPropagation()"><button class="btn-mini" onclick="openHistorico('${d.id}')">💬 Histórico</button></td>
+      <td onclick="event.stopPropagation()" style="white-space:nowrap;"><button class="btn-mini" onclick="openHistorico('${d.id}')">💬 Histórico</button>${d.status === "perdido" ? ` <button class="btn-mini" onclick="reabrirNegocio('${d.id}')" title="Voltar este negócio para o funil de vendas">↩ Reabrir</button>` : ""}</td>
     </tr>
   `).join("");
 }
@@ -1834,6 +1835,7 @@ async function renderHistorico() {
   document.getElementById("histComposerHint").textContent =
     (comoGestor ? "★ comentando como gestor · " : "") +
     `será registrada na etapa atual: ${ETAPA_LABEL[d.etapa_funil] || d.etapa_funil}`;
+  document.getElementById("histReabrirBtn").style.display = d.status === "perdido" ? "" : "none";
 
   const box = document.getElementById("histTimeline");
   if (!data.eventos.length) {
@@ -1846,7 +1848,10 @@ async function renderHistorico() {
       const de = ev.etapa_anterior ? `${esc(ETAPA_LABEL[ev.etapa_anterior] || ev.etapa_anterior)} → ` : "Negócio criado em ";
       const classeFechamento = ev.etapa_nova === "fechado_ganho" ? " ganho"
         : (ev.etapa_nova === "fechado_perdido" ? " perdido" : "");
-      const icone = ev.etapa_nova === "fechado_ganho" ? "✓" : (ev.etapa_nova === "fechado_perdido" ? "✕" : "◆");
+      const reaberto = ev.etapa_anterior === "fechado_perdido"
+        && ev.etapa_nova !== "fechado_ganho" && ev.etapa_nova !== "fechado_perdido";
+      const icone = ev.etapa_nova === "fechado_ganho" ? "✓"
+        : (ev.etapa_nova === "fechado_perdido" ? "✕" : (reaberto ? "↩" : "◆"));
       // motivo gravado no próprio marco; negócios perdidos antes desta versão
       // caem no fallback do motivo salvo no negócio
       let motivoHtml = "";
@@ -1860,7 +1865,7 @@ async function renderHistorico() {
       return `
         <div class="hist-event etapa${classeFechamento}">
           <div class="hist-dot">${icone}</div>
-          <div class="hist-etapa-label">${de}<b>${esc(ETAPA_LABEL[ev.etapa_nova] || ev.etapa_nova)}</b></div>
+          <div class="hist-etapa-label">${reaberto ? "Reaberto: " : ""}${de}<b>${esc(ETAPA_LABEL[ev.etapa_nova] || ev.etapa_nova)}</b></div>
           ${motivoHtml}
           <div class="hist-meta">${quando}${ev.autor_nome ? " · por " + esc(ev.autor_nome) : ""}</div>
         </div>`;
@@ -1917,6 +1922,18 @@ async function salvarNotaHistorico() {
 function closeHistorico() {
   document.getElementById("histOverlay").classList.remove("open");
   HIST_DEAL_ID = null;
+}
+
+async function reabrirNegocio(dealId) {
+  if (!confirm("Reabrir esta negociação?\n\nEla volta para o funil na etapa em que estava antes de ser perdida, e o motivo da perda continua registrado na linha do tempo.")) return;
+  try {
+    await api(`/deals/${dealId}/reabrir`, { method: "POST" });
+    if (HIST_DEAL_ID === dealId) await renderHistorico(); // atualiza o modal aberto
+    if (CURRENT_VIEW === "negocios") loadNegociosView();
+    refreshAll(); // negócio volta a aparecer no kanban
+  } catch (err) {
+    alert(err.message || "Não foi possível reabrir o negócio.");
+  }
 }
 
 document.getElementById("histOverlay").addEventListener("click", (e) => {

@@ -78,7 +78,10 @@ rota `/api/users` (só admin) e desativar os de exemplo.
     na lista de negócios fechados. As notas são imutáveis, para o histórico ser um
     registro confiável. Dá para colar a conversa do WhatsApp (nota verde 🟢) ou
     anexar um print (PNG/JPEG/WebP até 2 MB, guardado no próprio banco), e todo
-    comentário feito por um administrador aparece com o destaque "★ gestor";
+    comentário feito por um administrador aparece com o destaque "★ gestor".
+    Negócios perdidos podem ser reabertos (↩, na lista de fechados ou dentro do
+    próprio histórico): voltam ao funil na etapa em que estavam antes da perda,
+    e o motivo da perda permanece registrado no marco da linha do tempo;
   - view **Tarefas**: todos os compromissos (vencidos e futuros) de todos os seus
     clientes, com "+ Novo compromisso" avulso (escolhendo o cliente na hora);
   - view **Clientes**: lista completa com criação rápida;
