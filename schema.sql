@@ -55,6 +55,8 @@ CREATE TABLE IF NOT EXISTS deals (
     motivo_perda             TEXT,
     motivo_perda_detalhe     TEXT,
     origem_recompra          INTEGER NOT NULL DEFAULT 0,  -- 1 = criado pelo ciclo 🔁
+    categoria                TEXT NOT NULL DEFAULT 'padrao',  -- 'padrao' | 'software'
+    produto_software         TEXT,  -- revele_momentos | revele_momentos_frontier
     created_at               TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at                TEXT NOT NULL DEFAULT (datetime('now'))
 );

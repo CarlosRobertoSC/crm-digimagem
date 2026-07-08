@@ -962,13 +962,24 @@ def create_deal():
     if g.current_user["role"] != "admin":
         user_id = g.current_user["id"]
 
+    categoria = body.get("categoria") or "padrao"
+    if categoria not in ("padrao", "software"):
+        return jsonify({"error": "Categoria de negócio inválida."}), 400
+    produto_software = None
+    if categoria == "software":
+        produto_software = body.get("produto_software")
+        if produto_software not in PRODUTOS_SOFTWARE:
+            return jsonify({"error": "Escolha o produto: Revele Momentos ou Revele Momentos Frontier."}), 400
+
     did = new_id()
     etapa_inicial = body.get("etapa_funil", "novo_lead")
     db.execute("""
-        INSERT INTO deals (id, customer_id, user_id, titulo, etapa_funil, valor_estimado, status, data_prevista_fechamento)
-        VALUES (?,?,?,?,?,?,'aberto',?)
+        INSERT INTO deals (id, customer_id, user_id, titulo, etapa_funil, valor_estimado, status,
+                           data_prevista_fechamento, categoria, produto_software)
+        VALUES (?,?,?,?,?,?,'aberto',?,?,?)
     """, (did, body["customer_id"], user_id, body["titulo"],
-          etapa_inicial, body.get("valor_estimado", 0), body.get("data_prevista_fechamento")))
+          etapa_inicial, body.get("valor_estimado", 0), body.get("data_prevista_fechamento"),
+          categoria, produto_software))
     db.execute("""
         INSERT INTO deal_stage_history (id, deal_id, etapa_anterior, etapa_nova, user_id, data_transicao)
         VALUES (?,?,NULL,?,?,?)
@@ -1696,10 +1707,17 @@ def list_lembretes():
           AND dt.data_prazo IS NOT NULL AND dt.data_prazo <= ?
         ORDER BY dt.data_prazo
     """, (uid, ate_amanha)).fetchall()
+    inicio_mes = datetime.now(timezone.utc).strftime("%Y-%m-01")
+    sw = db.execute("""
+        SELECT COUNT(*) as ofertas,
+               COALESCE(SUM(CASE WHEN status = 'ganho' THEN 1 ELSE 0 END), 0) as ganhas
+        FROM deals WHERE user_id = ? AND categoria = 'software' AND created_at >= ?
+    """, (uid, inicio_mes)).fetchone()
     return jsonify({
         "hoje": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
         "compromissos": [dict(r) for r in compromissos],
         "delegadas": [dict(r) for r in delegadas],
+        "meta_software": {"ofertas_mes": sw["ofertas"], "ganhas_mes": sw["ganhas"]},
     })
 
 
@@ -1740,7 +1758,7 @@ def report_pipeline():
 
     rows = db.execute(f"""
         SELECT etapa_funil, COUNT(*) as quantidade, COALESCE(SUM(valor_estimado),0) as valor_total
-        FROM deals WHERE status = 'aberto' {clause}{filtro_data}
+        FROM deals WHERE status = 'aberto' AND categoria = 'padrao' {clause}{filtro_data}
         GROUP BY etapa_funil
     """, params).fetchall()
     por_etapa = {r["etapa_funil"]: dict(r) for r in rows}
@@ -1771,7 +1789,7 @@ def report_desempenho_equipe():
     rows = db.execute(f"""
         SELECT deals.*, u.nome as vendedor_nome FROM deals
         LEFT JOIN users u ON u.id = deals.user_id
-        WHERE status IN ('ganho','perdido') AND etapa_atualizada_em BETWEEN ? AND ? {clause}
+        WHERE status IN ('ganho','perdido') AND categoria = 'padrao' AND etapa_atualizada_em BETWEEN ? AND ? {clause}
     """, [inicio, fim + " 23:59:59"] + params).fetchall()
 
     por_vendedor = {}
@@ -1823,7 +1841,7 @@ def report_motivos_perda():
     rows = db.execute(f"""
         SELECT motivo_perda, COUNT(*) as quantidade, COALESCE(SUM(valor_estimado),0) as valor_total
         FROM deals
-        WHERE status = 'perdido' AND etapa_atualizada_em BETWEEN ? AND ? {clause}
+        WHERE status = 'perdido' AND categoria = 'padrao' AND etapa_atualizada_em BETWEEN ? AND ? {clause}
         GROUP BY motivo_perda
         ORDER BY quantidade DESC
     """, [inicio, fim + " 23:59:59"] + params).fetchall()
@@ -1914,7 +1932,7 @@ def report_forecast():
         SELECT deals.*, c.nome as cliente_nome, u.nome as vendedor_nome FROM deals
         JOIN customers c ON c.id = deals.customer_id
         LEFT JOIN users u ON u.id = deals.user_id
-        WHERE status = 'aberto' AND data_prevista_fechamento BETWEEN ? AND ? {clause}
+        WHERE status = 'aberto' AND categoria = 'padrao' AND data_prevista_fechamento BETWEEN ? AND ? {clause}
         ORDER BY data_prevista_fechamento
     """, [inicio, fim] + params).fetchall()
 
@@ -1937,6 +1955,75 @@ def report_forecast():
         "valor_bruto_total": valor_bruto_total, "valor_ponderado_total": round(valor_ponderado_total, 2),
         "quantidade": len(negocios), "negocios": negocios,
     })
+
+
+PRODUTOS_SOFTWARE = {
+    "revele_momentos": "Revele Momentos",
+    "revele_momentos_frontier": "Revele Momentos Frontier",
+}
+META_SOFTWARE = 1  # vendas ganhas esperadas por usuário no período (mensal)
+
+
+@app.get("/api/reports/software")
+@login_required
+def report_software():
+    """Relatório do produto estratégico 🎞 (software Revele Momentos):
+    meta por usuário, totais e a lista completa das negociações de software.
+    Visibilidade: vendedor só vê o próprio; admin vê todos, inclusive outros
+    admins — a mesma regra dos demais relatórios."""
+    db = get_db()
+    try:
+        inicio, fim = parse_period_from_request()
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    if not inicio:
+        return jsonify({"error": "Informe o parâmetro 'periodo' para este relatório."}), 400
+    clause, params = report_scope_clause("deals.user_id")
+
+    rows = db.execute(f"""
+        SELECT deals.*, c.nome as cliente_nome, u.nome as vendedor_nome
+        FROM deals
+        JOIN customers c ON c.id = deals.customer_id
+        LEFT JOIN users u ON u.id = deals.user_id
+        WHERE deals.categoria = 'software' AND deals.created_at BETWEEN ? AND ? {clause}
+        ORDER BY deals.created_at DESC
+    """, [inicio, fim + " 23:59:59"] + params).fetchall()
+
+    # Painel de meta: no modo "todos", inclui TODOS os usuários ativos
+    # (vendedores E admins — a meta vale para todo mundo); quem não ofereceu
+    # nada aparece com meta ✗, que é justamente quem precisa agir.
+    if g.current_user["role"] == "admin" and request.args.get("scope") == "all":
+        usuarios_alvo = db.execute("SELECT id, nome, role FROM users WHERE ativo = 1 ORDER BY nome").fetchall()
+    elif g.current_user["role"] == "admin" and request.args.get("vendedor_id"):
+        usuarios_alvo = db.execute("SELECT id, nome, role FROM users WHERE id = ?",
+                                   (request.args.get("vendedor_id"),)).fetchall()
+    else:
+        usuarios_alvo = db.execute("SELECT id, nome, role FROM users WHERE id = ?",
+                                   (g.current_user["id"],)).fetchall()
+
+    metas = {u["id"]: {"user_id": u["id"], "nome": u["nome"], "role": u["role"],
+                       "ofertas": 0, "ganhas": 0, "perdidas": 0, "abertas": 0, "valor_ganho": 0.0}
+             for u in usuarios_alvo}
+    totais = {"ofertas": 0, "ganhas": 0, "perdidas": 0, "abertas": 0, "valor_ganho": 0.0}
+    negocios = []
+    for d in rows:
+        m = metas.get(d["user_id"])
+        chave = "ganhas" if d["status"] == "ganho" else ("perdidas" if d["status"] == "perdido" else "abertas")
+        for alvo in ([m] if m is not None else []) + [totais]:
+            alvo["ofertas"] += 1
+            alvo[chave] += 1
+            if d["status"] == "ganho":
+                alvo["valor_ganho"] += d["valor_estimado"] or 0
+        negocios.append({
+            "deal_id": d["id"], "titulo": d["titulo"],
+            "produto": PRODUTOS_SOFTWARE.get(d["produto_software"], d["produto_software"] or "—"),
+            "cliente_nome": d["cliente_nome"], "vendedor_nome": d["vendedor_nome"],
+            "valor_estimado": d["valor_estimado"], "status": d["status"],
+            "etapa_funil": d["etapa_funil"], "created_at": d["created_at"],
+        })
+    usuarios = [{**m, "meta_ok": m["ganhas"] >= META_SOFTWARE} for m in metas.values()]
+    return jsonify({"periodo": {"inicio": inicio, "fim": fim}, "meta_por_usuario": META_SOFTWARE,
+                    "usuarios": usuarios, "totais": totais, "negocios": negocios})
 
 
 @app.get("/api/reports/origem-leads")
@@ -2071,6 +2158,8 @@ def migrate_missing_columns(conn):
         },
         "deals": {
             "origem_recompra": "INTEGER NOT NULL DEFAULT 0",
+            "categoria": "TEXT NOT NULL DEFAULT 'padrao'",
+            "produto_software": "TEXT",
         },
     }
     for tabela, colunas in tabelas_e_colunas.items():

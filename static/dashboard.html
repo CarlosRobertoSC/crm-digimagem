@@ -725,6 +725,7 @@
         <div class="report-tab-btn" data-tab="atividades" onclick="setReportTab('atividades')">Atividades</div>
         <div class="report-tab-btn" data-tab="forecast" onclick="setReportTab('forecast')">Forecast</div>
         <div class="report-tab-btn" data-tab="origem" onclick="setReportTab('origem')">Origem de Leads</div>
+        <div class="report-tab-btn" data-tab="software" onclick="setReportTab('software')">🎞 Software</div>
       </div>
 
       <div class="panel" id="reportContent">
@@ -981,6 +982,14 @@ function renderLembretes(feed, data) {
       onClick: () => showView("delegadas"),
     });
   });
+  if (data.meta_software && data.meta_software.ofertas_mes === 0) {
+    itens.push({
+      hora: "🎞 meta",
+      vencida: false,
+      desc: `Ofereça o software Revele Momentos aos clientes de impressoras ASK/Frontier <span class="lembrete-origem">· nenhuma oferta este mês</span>`,
+      onClick: () => showView("clientes"),
+    });
+  }
   if (!itens.length) return;
   const box = document.createElement("div");
   box.className = "lembretes-box";
@@ -1055,7 +1064,7 @@ async function renderFunil(containerId, subId, showControls) {
       const late = horasParado > 48;
       html += `
         <div class="funil-card ${late ? "late" : ""}" data-customer="${d.customer_id}" data-deal="${d.id}">
-          <b>${d.origem_recompra ? `<span title="Negócio criado automaticamente pela recompra programada">🔁 </span>` : ""}${esc(d.cliente_nome)}</b>
+          <b>${d.origem_recompra ? `<span title="Negócio criado automaticamente pela recompra programada">🔁 </span>` : ""}${d.categoria === "software" ? `<span title="Negócio do software Revele Momentos">🎞 </span>` : ""}${esc(d.cliente_nome)}</b>
           <span class="valor">R$ ${Number(d.valor_estimado).toLocaleString("pt-BR")}</span>
           ${mostrandoTodos() && d.vendedor_nome ? `<span class="vendor-badge" style="display:inline-block;margin-top:4px;">${esc(d.vendedor_nome)}</span>` : ""}
           ${late ? `<span class="late-flag">● parado ${horasParado}h</span>` : ""}
@@ -1174,7 +1183,7 @@ function renderFechados() {
   }
   tbody.innerHTML = fechados.map(d => `
     <tr onclick="showCustomer('${d.customer_id}'); showView('dashboard')">
-      <td>${esc(d.titulo)}</td>
+      <td>${d.categoria === "software" ? "🎞 " : ""}${esc(d.titulo)}</td>
       <td>${esc(d.cliente_nome)}</td>
       ${verTodos ? `<td>${esc(d.vendedor_nome || "—")}</td>` : ""}
       <td>R$ ${Number(d.valor_estimado).toLocaleString("pt-BR")}</td>
@@ -1655,6 +1664,53 @@ async function populateVendorFilter() {
   sel.dataset.loaded = "1";
 }
 
+async function renderReportSoftware(content, periodo) {
+  const data = await api(`/reports/software?${periodo}${reportScopeParams()}`);
+  const t = data.totais;
+  const fmt = v => "R$ " + Number(v || 0).toLocaleString("pt-BR");
+  const statusPill = n => n.status === "ganho"
+    ? `<span class="pill ganho">Ganho</span>`
+    : (n.status === "perdido" ? `<span class="pill perdido">Perdido</span>`
+      : `<span class="pill">${esc(ETAPA_LABEL[n.etapa_funil] || n.etapa_funil)}</span>`);
+  content.innerHTML = `
+    <div class="panel-head"><div class="panel-title">🎞 Software Revele Momentos</div>
+      <span style="font-size:11px;color:var(--text-muted);font-family:var(--font-mono);">meta: ${data.meta_por_usuario} venda(s) por pessoa no período</span>
+    </div>
+    <div style="display:flex;gap:18px;flex-wrap:wrap;margin-bottom:16px;font-size:12.5px;">
+      <span>Ofertas: <b>${t.ofertas}</b></span>
+      <span style="color:#1fbf63;">Vendidas: <b>${t.ganhas}</b></span>
+      <span style="color:var(--urgent);">Perdidas: <b>${t.perdidas}</b></span>
+      <span>Em negociação: <b>${t.abertas}</b></span>
+      <span>Valor vendido: <b>${fmt(t.valor_ganho)}</b></span>
+    </div>
+    <div class="tarefas-section-title">Meta por usuário</div>
+    <table class="report-table" style="margin-bottom:18px;">
+      <thead><tr><th>Usuário</th><th>Ofertas</th><th>Vendidas</th><th>Perdidas</th><th>Valor vendido</th><th>Meta</th></tr></thead>
+      <tbody>${data.usuarios.map(u => `
+        <tr>
+          <td>${esc(u.nome)}${u.role === "admin" ? ` <span class="vendor-badge">admin</span>` : ""}</td>
+          <td>${u.ofertas}</td><td>${u.ganhas}</td><td>${u.perdidas}</td><td>${fmt(u.valor_ganho)}</td>
+          <td>${u.meta_ok ? `<span class="pill ganho">✓ atingida</span>` : `<span class="pill perdido">✗ pendente</span>`}</td>
+        </tr>`).join("")}</tbody>
+    </table>
+    <div class="tarefas-section-title">Negociações do software no período</div>
+    ${!data.negocios.length ? `<div class="placeholder-panel">Nenhuma oferta de software registrada nesse período. Use "+ Novo negócio → 🎞 Software" no painel do cliente.</div>` : `
+    <table class="report-table">
+      <thead><tr><th>Data</th><th>Cliente</th><th>Produto</th>${REPORT_VENDOR_FILTER === "all" ? "<th>Vendedor</th>" : ""}<th>Valor</th><th>Resultado</th><th></th></tr></thead>
+      <tbody>${data.negocios.map(n => `
+        <tr>
+          <td style="font-family:var(--font-mono);font-size:11px;">${new Date(n.created_at.replace(" ", "T") + "Z").toLocaleDateString("pt-BR")}</td>
+          <td>${esc(n.cliente_nome)}</td>
+          <td>${esc(n.produto)}</td>
+          ${REPORT_VENDOR_FILTER === "all" ? `<td>${esc(n.vendedor_nome || "—")}</td>` : ""}
+          <td>${fmt(n.valor_estimado)}</td>
+          <td>${statusPill(n)}</td>
+          <td style="white-space:nowrap;"><button class="btn-mini" onclick="openHistorico('${esc(n.deal_id)}')">💬</button>${n.status === "perdido" ? ` <button class="btn-mini" onclick="reabrirNegocio('${esc(n.deal_id)}')">↩ Reabrir</button>` : ""}</td>
+        </tr>`).join("")}</tbody>
+    </table>`}
+  `;
+}
+
 function setReportTab(tab) {
   REPORT_TAB = tab;
   document.querySelectorAll(".report-tab-btn").forEach(b => b.classList.toggle("active", b.dataset.tab === tab));
@@ -1684,6 +1740,7 @@ async function loadRelatoriosView() {
     else if (REPORT_TAB === "atividades") await renderReportAtividades(content, periodo);
     else if (REPORT_TAB === "forecast") await renderReportForecast(content, periodo);
     else if (REPORT_TAB === "origem") await renderReportOrigem(content, periodo);
+    else if (REPORT_TAB === "software") await renderReportSoftware(content, periodo);
   } catch (err) {
     content.innerHTML = `<div class="placeholder-panel">${esc(err.message || "Erro ao carregar relatório.")}</div>`;
   }
@@ -2099,6 +2156,7 @@ async function reabrirNegocio(dealId) {
     await api(`/deals/${dealId}/reabrir`, { method: "POST" });
     if (HIST_DEAL_ID === dealId) await renderHistorico(); // atualiza o modal aberto
     if (CURRENT_VIEW === "negocios") loadNegociosView();
+    if (CURRENT_VIEW === "relatorios") loadRelatoriosView();
     refreshAll(); // negócio volta a aparecer no kanban
   } catch (err) {
     alert(err.message || "Não foi possível reabrir o negócio.");
@@ -2182,7 +2240,13 @@ const MODAL_CONFIG = {
   negocio: {
     title: "Novo negócio",
     fields: [
-      { name: "titulo", label: "Título do negócio", type: "text", required: true },
+      { name: "tipo_negocio", label: "Tipo de negócio", type: "select",
+        options: [
+          ["padrao", "Venda padrão (impressoras, insumos, serviços)"],
+          ["revele_momentos", "🎞 Software — Revele Momentos"],
+          ["revele_momentos_frontier", "🎞 Software — Revele Momentos Frontier"],
+        ] },
+      { name: "titulo", label: "Título do negócio (ex.: Assinatura Revele Momentos)", type: "text", required: true },
       { name: "valor_estimado", label: "Valor estimado (R$)", type: "number" },
       { name: "etapa_funil", label: "Etapa", type: "select",
         options: [["novo_lead","Novo lead"], ["qualificacao","Qualificação"], ["proposta_enviada","Proposta enviada"], ["negociacao","Negociação"]] },
@@ -2191,6 +2255,11 @@ const MODAL_CONFIG = {
     submit: async (values) => {
       values.customer_id = SELECTED_CUSTOMER_ID;
       values.valor_estimado = values.valor_estimado ? Number(values.valor_estimado) : 0;
+      if (values.tipo_negocio && values.tipo_negocio !== "padrao") {
+        values.categoria = "software";
+        values.produto_software = values.tipo_negocio;
+      }
+      delete values.tipo_negocio;
       return api("/deals", { method: "POST", body: JSON.stringify(values) });
     },
     onSuccess: async () => {
