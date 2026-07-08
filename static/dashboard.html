@@ -612,7 +612,9 @@
       </div>
       <div class="panel">
         <div class="panel-head">
-          <div class="panel-title">✓ Negócios Fechados</div>
+          <div class="panel-title">✓ Negócios Fechados <span id="fechadosContador" style="font-size:11px;color:var(--text-muted);font-family:var(--font-mono);font-weight:400;"></span></div>
+          <select id="fechadosFiltroUser" onchange="renderFechados()" title="Filtrar negócios fechados por usuário"
+            style="display:none;background:var(--surface-raised);border:1px solid var(--border);border-radius:8px;padding:7px 10px;color:var(--text-primary);font-size:12px;max-width:260px;cursor:pointer;"></select>
         </div>
         <table class="clientes-table">
           <thead id="theadFechados"><tr><th>Negócio</th><th>Cliente</th><th>Valor</th><th>Resultado</th></tr></thead>
@@ -1117,17 +1119,56 @@ async function loadFunil() {
   await renderFunil("funilCols", "funilSub", false);
 }
 
+let FECHADOS_CACHE = [];
+
 async function loadNegociosView() {
   await renderFunil("negFunilCols", "negFunilSub", true);
   const deals = await api("/deals" + scopeQuery());
-  const fechados = deals.filter(d => d.status !== "aberto");
+  FECHADOS_CACHE = deals.filter(d => d.status !== "aberto");
+  montarFiltroFechados();
+  renderFechados();
+}
+
+function montarFiltroFechados() {
+  const sel = document.getElementById("fechadosFiltroUser");
+  if (!mostrandoTodos()) {
+    // vendedor (ou admin no modo "só meus"): lista já é pessoal, filtro é ruído
+    sel.style.display = "none";
+    sel.value = "all";
+    return;
+  }
+  // Lista apenas usuários que TÊM negócios fechados, com a contagem de cada um
+  const porUser = {};
+  FECHADOS_CACHE.forEach(d => {
+    if (!d.user_id) return;
+    porUser[d.user_id] = porUser[d.user_id] || { nome: d.vendedor_nome || "—", qtd: 0 };
+    porUser[d.user_id].qtd++;
+  });
+  const anterior = sel.value || "all";
+  sel.innerHTML = `<option value="all">👤 Todos os usuários (${FECHADOS_CACHE.length})</option>` +
+    Object.entries(porUser)
+      .sort((a, b) => a[1].nome.localeCompare(b[1].nome, "pt-BR"))
+      .map(([id, u]) => `<option value="${esc(id)}">${esc(u.nome)} (${u.qtd})</option>`).join("");
+  // mantém a escolha anterior se o usuário ainda estiver na lista
+  sel.value = [...sel.options].some(o => o.value === anterior) ? anterior : "all";
+  sel.style.display = FECHADOS_CACHE.length ? "" : "none";
+}
+
+function renderFechados() {
   const verTodos = mostrandoTodos();
+  const filtro = verTodos ? document.getElementById("fechadosFiltroUser").value : "all";
+  const fechados = filtro !== "all"
+    ? FECHADOS_CACHE.filter(d => d.user_id === filtro)
+    : FECHADOS_CACHE;
+  document.getElementById("fechadosContador").textContent = FECHADOS_CACHE.length
+    ? (filtro !== "all" ? `· ${fechados.length} de ${FECHADOS_CACHE.length}` : `· ${FECHADOS_CACHE.length}`)
+    : "";
   document.getElementById("theadFechados").innerHTML = verTodos
     ? `<tr><th>Negócio</th><th>Cliente</th><th>Vendedor</th><th>Valor</th><th>Resultado</th><th></th></tr>`
     : `<tr><th>Negócio</th><th>Cliente</th><th>Valor</th><th>Resultado</th><th></th></tr>`;
   const tbody = document.getElementById("fechadosTableBody");
   if (!fechados.length) {
-    tbody.innerHTML = `<tr><td colspan="${verTodos ? 6 : 5}" style="color:var(--text-muted);">Nenhum negócio fechado ainda.</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="${verTodos ? 6 : 5}" style="color:var(--text-muted);">${filtro !== "all" ? "Este usuário não tem negócios fechados." : "Nenhum negócio fechado ainda."}</td></tr>`;
     return;
   }
   tbody.innerHTML = fechados.map(d => `
