@@ -1250,7 +1250,7 @@ async function showCustomer(customerId) {
     </div>
     <div class="kv-row"><span>Última compra</span><span>${diasSemComprar !== null ? diasSemComprar + " dias atrás" : "sem registro"}</span></div>
     <div class="kv-row"><span>Negócios ativos</span><span>${data.deals.filter(d=>d.status==='aberto').length}</span></div>
-    ${c.cpf_cnpj ? `<div class="kv-row"><span>CPF/CNPJ</span><span>${esc(c.cpf_cnpj)}</span></div>` : ""}
+    ${c.cpf_cnpj ? `<div class="kv-row"><span>CPF/CNPJ</span><span>${esc(fmtCpfCnpj(c.cpf_cnpj))}</span></div>` : ""}
     ${c.telefone ? `<div class="kv-row"><span>Telefone</span><span>${esc(c.telefone)}</span></div>` : ""}
     ${c.email ? `<div class="kv-row"><span>Email</span><span>${esc(c.email)}</span></div>` : ""}
     ${c.recompra_dias ? `<div class="kv-row"><span>🔁 Recompra</span><span>a cada ${esc(c.recompra_dias)} dias${c.proxima_recompra ? " · próx. contato " + esc(c.proxima_recompra.split("-").reverse().join("/")) : " · reprograma ao fechar o negócio atual"}</span></div>` : ""}
@@ -2358,12 +2358,39 @@ function setFieldHint(el, text, color) {
   if (hint) { hint.textContent = text; hint.style.color = color || "var(--text-muted)"; }
 }
 
+// CNPJ alfanumérico (vigente desde jul/2026): 12 posições [0-9A-Z] + 2 DVs
+// numéricos, módulo 11 com valor = ASCII - 48. NUNCA remover as letras.
+function dvCnpj(base) {
+  let soma = 0;
+  const chars = base.split("").reverse();
+  for (let i = 0; i < chars.length; i++) soma += (chars[i].charCodeAt(0) - 48) * (2 + (i % 8));
+  const resto = soma % 11;
+  return resto < 2 ? 0 : 11 - resto;
+}
+function cnpjValido(doc) {
+  if (!/^[0-9A-Z]{12}[0-9]{2}$/.test(doc)) return false;
+  const dv1 = dvCnpj(doc.slice(0, 12));
+  const dv2 = dvCnpj(doc.slice(0, 12) + dv1);
+  return doc.slice(12) === `${dv1}${dv2}`;
+}
+function fmtCpfCnpj(v) {
+  const s = String(v || "");
+  if (/^[0-9]{11}$/.test(s)) return `${s.slice(0,3)}.${s.slice(3,6)}.${s.slice(6,9)}-${s.slice(9)}`;
+  if (/^[0-9A-Z]{12}[0-9]{2}$/.test(s)) return `${s.slice(0,2)}.${s.slice(2,5)}.${s.slice(5,8)}/${s.slice(8,12)}-${s.slice(12)}`;
+  return s;
+}
+
 async function autoLookupCnpj(el) {
-  const digitos = el.value.replace(/\D/g, "");
-  if (digitos.length !== 14) { setFieldHint(el, "", ""); return; }
+  const doc = el.value.replace(/[.\-\/\s]/g, "").toUpperCase();
+  if (doc.length !== 14 || !/^[0-9A-Z]{12}[0-9]{2}$/.test(doc)) { setFieldHint(el, "", ""); return; }
+  if (!cnpjValido(doc)) {
+    setFieldHint(el, "CNPJ inválido — o dígito verificador não confere.", "var(--urgent)");
+    return;
+  }
+  el.value = doc; // normaliza no campo (maiúsculas, sem máscara)
   setFieldHint(el, "Buscando dados na Receita Federal…", "var(--signal)");
   try {
-    const dados = await api(`/lookup/cnpj/${digitos}`);
+    const dados = await api(`/lookup/cnpj/${doc}`);
     const mapa = { nome: "nome", endereco: "endereco", cep: "cep", cidade: "cidade", estado: "estado", telefone: "telefone" };
     Object.entries(mapa).forEach(([campoApi, campoForm]) => {
       const alvo = document.getElementById(`modal_${campoForm}`);

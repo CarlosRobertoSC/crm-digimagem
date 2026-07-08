@@ -19,6 +19,7 @@ import sqlite3
 import os
 import uuid
 import json
+import re
 import time
 import threading
 import base64
@@ -233,6 +234,66 @@ def active_admin_count(db, exclude_user_id=None):
 # ------------------------------------------------------------------
 # Motor de Alertas (regras sobre dados estruturados — sem leitura de conversas)
 # ------------------------------------------------------------------
+# ------------------------------------------------------------------
+# CPF/CNPJ — com suporte ao CNPJ ALFANUMÉRICO (IN RFB nº 2.229/2024,
+# vigente desde julho/2026): 12 posições [0-9A-Z] + 2 dígitos verificadores
+# numéricos. O DV usa módulo 11 com valor do caractere = ASCII - 48
+# (dígitos mantêm seu valor; A=17 … Z=42), o que torna o MESMO cálculo
+# válido para os CNPJs numéricos antigos (retrocompatível).
+# Vetor de teste oficial da Receita: 12ABC34501DE -> DV 35.
+# ------------------------------------------------------------------
+CNPJ_RE = re.compile(r"^[0-9A-Z]{12}[0-9]{2}$")
+
+
+def normalizar_cpf_cnpj(valor):
+    """Remove a máscara (pontos, traço, barra, espaços) e põe em maiúsculas.
+    NUNCA remover letras: em CNPJs novos elas fazem parte do número."""
+    return re.sub(r"[.\-/\s]", "", str(valor or "")).upper()
+
+
+def _dv_cnpj(base):
+    """Um dígito verificador do CNPJ (base com 12 ou 13 caracteres):
+    pesos 2..9 aplicados da direita para a esquerda, em ciclo."""
+    soma = 0
+    for i, ch in enumerate(reversed(base)):
+        soma += (ord(ch) - 48) * (2 + (i % 8))
+    resto = soma % 11
+    return 0 if resto < 2 else 11 - resto
+
+
+def cnpj_valido(cnpj):
+    if not CNPJ_RE.match(cnpj):
+        return False
+    dv1 = _dv_cnpj(cnpj[:12])
+    dv2 = _dv_cnpj(cnpj[:12] + str(dv1))
+    return cnpj[12:] == f"{dv1}{dv2}"
+
+
+def cpf_valido(cpf):
+    if not re.fullmatch(r"[0-9]{11}", cpf) or cpf == cpf[0] * 11:
+        return False
+    for n in (9, 10):
+        soma = sum(int(cpf[i]) * ((n + 1) - i) for i in range(n))
+        if (soma * 10) % 11 % 10 != int(cpf[n]):
+            return False
+    return True
+
+
+def validar_cpf_cnpj_ou_erro(valor):
+    """Normaliza e valida. Retorna (valor_normalizado, None) quando ok,
+    (None, None) quando vazio (campo é opcional), ou (None, mensagem)."""
+    v = normalizar_cpf_cnpj(valor)
+    if not v:
+        return None, None
+    if len(v) == 11 and v.isdigit():
+        return (v, None) if cpf_valido(v) else (None, "CPF inválido — confira os dígitos.")
+    if len(v) == 14:
+        if cnpj_valido(v):
+            return v, None
+        return None, "CNPJ inválido — o dígito verificador não confere (lembre: CNPJs novos podem conter letras maiúsculas)."
+    return None, "CPF/CNPJ inválido — use 11 caracteres (CPF) ou 14 (CNPJ)."
+
+
 def _int_or_none(v):
     """Converte para inteiro positivo, ou None (usado no ciclo de recompra)."""
     try:
@@ -701,6 +762,9 @@ def create_customer():
     responsavel_id = body.get("responsavel_id", g.current_user["id"])
     if g.current_user["role"] != "admin":
         responsavel_id = g.current_user["id"]
+    cpf_cnpj_norm, erro_doc = validar_cpf_cnpj_ou_erro(body.get("cpf_cnpj"))
+    if erro_doc:
+        return jsonify({"error": erro_doc}), 400
     recompra_dias = _int_or_none(body.get("recompra_dias"))
     db.execute("""
         INSERT INTO customers (id, nome, whatsapp_id, telefone, email, cpf_cnpj, endereco, cep,
@@ -708,7 +772,7 @@ def create_customer():
             recompra_dias, proxima_recompra)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, (cid, body["nome"], body.get("whatsapp_id"), body.get("telefone"), body.get("email"),
-          body.get("cpf_cnpj"), body.get("endereco"), body.get("cep"), body.get("cidade"), body.get("estado"),
+          cpf_cnpj_norm, body.get("endereco"), body.get("cep"), body.get("cidade"), body.get("estado"),
           body.get("data_ultima_compra"), body.get("status_fidelidade", "novo"),
           responsavel_id, body.get("origem"), body.get("observacoes"),
           recompra_dias, _hoje_mais_dias(recompra_dias) if recompra_dias else None))
@@ -727,6 +791,11 @@ def update_customer(customer_id):
     if g.current_user["role"] != "admin" and existing["responsavel_id"] != g.current_user["id"]:
         return jsonify({"error": "Sem permissão para editar este cliente."}), 403
     body = request.get_json(force=True, silent=True) or {}
+    if "cpf_cnpj" in body:
+        doc_norm, erro_doc = validar_cpf_cnpj_ou_erro(body.get("cpf_cnpj"))
+        if erro_doc:
+            return jsonify({"error": erro_doc}), 400
+        body["cpf_cnpj"] = doc_norm
     campos = ["nome", "whatsapp_id", "telefone", "email", "cpf_cnpj", "endereco", "cep",
               "cidade", "estado", "data_ultima_compra", "status_fidelidade", "observacoes", "ativo"]
     valores = {c: body.get(c, existing[c]) for c in campos}
@@ -785,11 +854,15 @@ def _http_get_json(url, timeout=6):
 @app.get("/api/lookup/cnpj/<cnpj>")
 @login_required
 def lookup_cnpj(cnpj):
-    digitos = "".join(c for c in cnpj if c.isdigit())
-    if len(digitos) != 14:
-        return jsonify({"error": "CNPJ precisa ter 14 dígitos."}), 400
+    # CNPJ alfanumérico: manter as letras! Normaliza (maiúsculas, sem máscara)
+    # e valida o dígito verificador antes de gastar uma consulta externa.
+    doc = normalizar_cpf_cnpj(cnpj)
+    if len(doc) != 14 or not CNPJ_RE.match(doc):
+        return jsonify({"error": "CNPJ precisa ter 14 caracteres (12 alfanuméricos + 2 dígitos verificadores)."}), 400
+    if not cnpj_valido(doc):
+        return jsonify({"error": "CNPJ inválido — o dígito verificador não confere."}), 400
     try:
-        dados = _http_get_json(f"https://brasilapi.com.br/api/cnpj/v1/{digitos}")
+        dados = _http_get_json(f"https://brasilapi.com.br/api/cnpj/v1/{doc}")
     except urllib.error.HTTPError as e:
         if e.code == 404:
             return jsonify({"error": "CNPJ não encontrado na Receita Federal."}), 404
