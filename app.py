@@ -233,6 +233,19 @@ def active_admin_count(db, exclude_user_id=None):
 # ------------------------------------------------------------------
 # Motor de Alertas (regras sobre dados estruturados — sem leitura de conversas)
 # ------------------------------------------------------------------
+def _int_or_none(v):
+    """Converte para inteiro positivo, ou None (usado no ciclo de recompra)."""
+    try:
+        n = int(str(v).strip())
+        return n if n > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _hoje_mais_dias(dias):
+    return (datetime.now(timezone.utc) + timedelta(days=dias)).strftime("%Y-%m-%d")
+
+
 def run_alert_engine():
     db = get_db()
 
@@ -306,6 +319,42 @@ def run_alert_engine():
                 descricao=f'{c["nome"]} é cliente VIP — considere enviar catálogo atualizado ou um mimo de fidelização.',
                 dados_extra=None,
             )
+
+    # 5) 🔁 Recompra programada — quando a data agendada do cliente chega, cria
+    # automaticamente o novo negócio (valor ZERO, para o vendedor preencher ao
+    # negociar) e um compromisso que aparece no 📌 do Feed de Alertas do
+    # responsável. Antiduplicação: só gera se o cliente NÃO tiver nenhum
+    # negócio aberto — o ciclo continua quando o negócio atual for fechado.
+    hoje = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    devidos = db.execute("""
+        SELECT * FROM customers
+        WHERE recompra_dias IS NOT NULL AND recompra_dias > 0
+          AND proxima_recompra IS NOT NULL AND proxima_recompra <= ?
+          AND ativo = 1 AND responsavel_id IS NOT NULL
+          AND NOT EXISTS (
+              SELECT 1 FROM deals d WHERE d.customer_id = customers.id AND d.status = 'aberto'
+          )
+    """, (hoje,)).fetchall()
+    for c in devidos:
+        did = new_id()
+        db.execute("""
+            INSERT INTO deals (id, customer_id, user_id, titulo, etapa_funil,
+                               valor_estimado, status, origem_recompra)
+            VALUES (?,?,?,?,'novo_lead',0,'aberto',1)
+        """, (did, c["id"], c["responsavel_id"], "Recompra de insumos"))
+        db.execute("""
+            INSERT INTO deal_stage_history (id, deal_id, etapa_anterior, etapa_nova, user_id, data_transicao)
+            VALUES (?,?,NULL,'novo_lead',?,?)
+        """, (new_id(), did, c["responsavel_id"], now_iso()))
+        db.execute("""
+            INSERT INTO tasks (id, customer_id, deal_id, user_id, descricao, tipo_atividade, data_lembrete)
+            VALUES (?,?,?,?,?,'follow_up',?)
+        """, (new_id(), c["id"], did, c["responsavel_id"],
+              f'🔁 Recompra programada: contatar {c["nome"]} para nova venda de insumos',
+              (datetime.now(timezone.utc) + timedelta(hours=23)).strftime("%Y-%m-%d %H:%M:%S")))
+        # desarma a agenda; o ciclo é reprogramado quando este negócio for fechado
+        db.execute("UPDATE customers SET proxima_recompra = NULL WHERE id = ?", (c["id"],))
+        audit("create", "deals", did, {"origem": "recompra_programada", "customer_id": c["id"]})
 
     db.commit()
 
@@ -652,14 +701,17 @@ def create_customer():
     responsavel_id = body.get("responsavel_id", g.current_user["id"])
     if g.current_user["role"] != "admin":
         responsavel_id = g.current_user["id"]
+    recompra_dias = _int_or_none(body.get("recompra_dias"))
     db.execute("""
         INSERT INTO customers (id, nome, whatsapp_id, telefone, email, cpf_cnpj, endereco, cep,
-            cidade, estado, data_ultima_compra, status_fidelidade, responsavel_id, origem, observacoes)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            cidade, estado, data_ultima_compra, status_fidelidade, responsavel_id, origem, observacoes,
+            recompra_dias, proxima_recompra)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, (cid, body["nome"], body.get("whatsapp_id"), body.get("telefone"), body.get("email"),
           body.get("cpf_cnpj"), body.get("endereco"), body.get("cep"), body.get("cidade"), body.get("estado"),
           body.get("data_ultima_compra"), body.get("status_fidelidade", "novo"),
-          responsavel_id, body.get("origem"), body.get("observacoes")))
+          responsavel_id, body.get("origem"), body.get("observacoes"),
+          recompra_dias, _hoje_mais_dias(recompra_dias) if recompra_dias else None))
     audit("create", "customers", cid, body)
     db.commit()
     return jsonify({"id": cid}), 201
@@ -680,6 +732,13 @@ def update_customer(customer_id):
     valores = {c: body.get(c, existing[c]) for c in campos}
     if "ativo" in body:
         valores["ativo"] = 1 if body.get("ativo") in (1, "1", True, "true") else 0
+    if "recompra_dias" in body:
+        novo_dias = _int_or_none(body.get("recompra_dias"))
+        if novo_dias != existing["recompra_dias"]:
+            # ligar ou alterar o ciclo reprograma o contato a partir de HOJE;
+            # desligar (vazio/zero) limpa a agenda
+            db.execute("UPDATE customers SET recompra_dias = ?, proxima_recompra = ? WHERE id = ?",
+                       (novo_dias, _hoje_mais_dias(novo_dias) if novo_dias else None, customer_id))
     db.execute(f"""
         UPDATE customers SET {", ".join(f"{c} = ?" for c in campos)}, updated_at = ?
         WHERE id = ?
@@ -898,6 +957,16 @@ def move_deal_stage(deal_id):
           motivo_perda if nova_etapa == "fechado_perdido" else None,
           motivo_perda_detalhe if nova_etapa == "fechado_perdido" else None,
           now_iso()))
+
+    # 🔁 Recompra programada: ao FECHAR o negócio (ganho ou perdido), agenda o
+    # próximo contato do cliente para daqui a N dias. O motor de alertas criará
+    # o novo negócio e o compromisso quando a data chegar.
+    if nova_etapa in ("fechado_ganho", "fechado_perdido"):
+        cli = db.execute("SELECT recompra_dias FROM customers WHERE id = ?",
+                         (existing["customer_id"],)).fetchone()
+        if cli and cli["recompra_dias"]:
+            db.execute("UPDATE customers SET proxima_recompra = ? WHERE id = ?",
+                       (_hoje_mais_dias(cli["recompra_dias"]), existing["customer_id"]))
 
     audit("update", "deals", deal_id, {"nova_etapa": nova_etapa, "motivo_perda": motivo_perda})
     db.commit()
@@ -1922,6 +1991,13 @@ def migrate_missing_columns(conn):
         "deal_stage_history": {
             "motivo_perda": "TEXT",
             "motivo_perda_detalhe": "TEXT",
+        },
+        "customers": {
+            "recompra_dias": "INTEGER",
+            "proxima_recompra": "TEXT",
+        },
+        "deals": {
+            "origem_recompra": "INTEGER NOT NULL DEFAULT 0",
         },
     }
     for tabela, colunas in tabelas_e_colunas.items():

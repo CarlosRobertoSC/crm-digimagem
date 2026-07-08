@@ -1055,7 +1055,7 @@ async function renderFunil(containerId, subId, showControls) {
       const late = horasParado > 48;
       html += `
         <div class="funil-card ${late ? "late" : ""}" data-customer="${d.customer_id}" data-deal="${d.id}">
-          <b>${esc(d.cliente_nome)}</b>
+          <b>${d.origem_recompra ? `<span title="Negócio criado automaticamente pela recompra programada">🔁 </span>` : ""}${esc(d.cliente_nome)}</b>
           <span class="valor">R$ ${Number(d.valor_estimado).toLocaleString("pt-BR")}</span>
           ${mostrandoTodos() && d.vendedor_nome ? `<span class="vendor-badge" style="display:inline-block;margin-top:4px;">${esc(d.vendedor_nome)}</span>` : ""}
           ${late ? `<span class="late-flag">● parado ${horasParado}h</span>` : ""}
@@ -1098,6 +1098,7 @@ async function renderFunil(containerId, subId, showControls) {
         e.stopPropagation();
         if (btn.dataset.action === "ganho") {
           await api(`/deals/${btn.dataset.deal}/stage`, { method: "POST", body: JSON.stringify({ etapa_funil: "fechado_ganho" }) });
+          await sugerirRecompra(btn.closest(".funil-card").dataset.customer);
           loadNegociosView(); refreshAll();
         } else {
           SELECTED_LOSS_DEAL_ID = btn.dataset.deal;
@@ -1252,6 +1253,7 @@ async function showCustomer(customerId) {
     ${c.cpf_cnpj ? `<div class="kv-row"><span>CPF/CNPJ</span><span>${esc(c.cpf_cnpj)}</span></div>` : ""}
     ${c.telefone ? `<div class="kv-row"><span>Telefone</span><span>${esc(c.telefone)}</span></div>` : ""}
     ${c.email ? `<div class="kv-row"><span>Email</span><span>${esc(c.email)}</span></div>` : ""}
+    ${c.recompra_dias ? `<div class="kv-row"><span>🔁 Recompra</span><span>a cada ${esc(c.recompra_dias)} dias${c.proxima_recompra ? " · próx. contato " + esc(c.proxima_recompra.split("-").reverse().join("/")) : " · reprograma ao fechar o negócio atual"}</span></div>` : ""}
     ${enderecoCompleto ? `<div class="kv-row"><span>Endereço</span><span style="text-align:right;max-width:60%;">${esc(enderecoCompleto)}</span></div>` : ""}
     ${insightsHtml}
     ${dealsHtml}
@@ -2079,6 +2081,18 @@ function closeHistorico() {
   HIST_DEAL_ID = null;
 }
 
+async function sugerirRecompra(customerId) {
+  // Momento "vendi a impressora, quero lembrar do insumo": oferece ligar o
+  // ciclo 🔁 uma única vez, para clientes que ainda não o têm ativo.
+  try {
+    if (!customerId) return;
+    const data = await api(`/customers/${customerId}`);
+    if (data.customer.recompra_dias) return; // já está ativo
+    if (!confirm(`Negócio ganho! 🎉\n\nAtivar a recompra programada para ${data.customer.nome}?\n\nA cada 30 dias, um novo negócio e um lembrete serão criados automaticamente para você nunca esquecer deste cliente. (Dá para mudar os dias na edição do cliente.)`)) return;
+    await api(`/customers/${customerId}`, { method: "PUT", body: JSON.stringify({ recompra_dias: 30 }) });
+  } catch (e) { /* sugestão é opcional: nunca trava o fluxo de ganho */ }
+}
+
 async function reabrirNegocio(dealId) {
   if (!confirm("Reabrir esta negociação?\n\nEla volta para o funil na etapa em que estava antes de ser perdida, e o motivo da perda continua registrado na linha do tempo.")) return;
   try {
@@ -2118,6 +2132,7 @@ const MODAL_CONFIG = {
       { name: "cep", label: "CEP", type: "text" },
       { name: "cidade", label: "Cidade", type: "text" },
       { name: "estado", label: "Estado (UF)", type: "select", options: UF_OPTIONS },
+      { name: "recompra_dias", label: "🔁 Recompra programada — contatar a cada N dias (vazio = desativado)", type: "number" },
       { name: "data_ultima_compra", label: "Última compra (opcional)", type: "date" },
     ],
     submit: async (values) => {
@@ -2146,6 +2161,7 @@ const MODAL_CONFIG = {
       { name: "cep", label: "CEP", type: "text" },
       { name: "cidade", label: "Cidade", type: "text" },
       { name: "estado", label: "Estado (UF)", type: "select", options: UF_OPTIONS },
+      { name: "recompra_dias", label: "🔁 Recompra programada — contatar a cada N dias (vazio = desativado)", type: "number" },
       { name: "data_ultima_compra", label: "Última compra (opcional)", type: "date" },
       { name: "observacoes", label: "Observações", type: "text" },
     ],

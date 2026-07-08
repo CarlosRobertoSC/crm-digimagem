@@ -31,6 +31,8 @@ CREATE TABLE IF NOT EXISTS customers (
     ativo               INTEGER NOT NULL DEFAULT 1,
     data_ultima_compra  TEXT,
     status_fidelidade   TEXT NOT NULL CHECK(status_fidelidade IN ('novo','recorrente','vip','inativo','perdido')) DEFAULT 'novo',
+    recompra_dias       INTEGER,  -- 🔁 ciclo de recompra em dias (NULL = desativado)
+    proxima_recompra    TEXT,     -- data agendada do próximo contato (YYYY-MM-DD)
     responsavel_id      TEXT REFERENCES users(id) ON DELETE SET NULL,
     origem              TEXT,
     observacoes         TEXT,
@@ -52,6 +54,7 @@ CREATE TABLE IF NOT EXISTS deals (
     data_prevista_fechamento TEXT,
     motivo_perda             TEXT,
     motivo_perda_detalhe     TEXT,
+    origem_recompra          INTEGER NOT NULL DEFAULT 0,  -- 1 = criado pelo ciclo 🔁
     created_at               TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at                TEXT NOT NULL DEFAULT (datetime('now'))
 );
