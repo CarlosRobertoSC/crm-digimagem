@@ -694,7 +694,11 @@
       <div class="panel">
         <div class="panel-head">
           <div class="panel-title">☑ Todos os Compromissos</div>
-          <button class="btn-primary" onclick="openModal('compromisso')">+ Novo compromisso</button>
+          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+            <input type="search" id="tarefaClienteFiltro" placeholder="🔍 Filtrar por cliente ou CPF/CNPJ…" oninput="renderTarefas()"
+              style="background:var(--surface-raised);border:1px solid var(--border);border-radius:8px;padding:8px 12px;color:var(--text-primary);font-size:12.5px;width:250px;max-width:100%;">
+            <button class="btn-primary" onclick="openModal('compromisso')">+ Novo compromisso</button>
+          </div>
         </div>
         <div id="tarefasVencidas"></div>
         <div id="tarefasFuturas"></div>
@@ -1463,8 +1467,28 @@ async function loadAssistenteView() {
 // ------------------------------------------------------------------
 // VIEW: Tarefas (todas, agrupadas por vencidas/futuras)
 // ------------------------------------------------------------------
+let TAREFAS_CACHE = [];
+
 async function loadTarefasView() {
-  const tasks = await api("/tasks" + scopeQuery());
+  TAREFAS_CACHE = await api("/tasks" + scopeQuery());
+  renderTarefas();
+}
+
+// remove acentos para a busca por nome ("Estudio" acha "Estúdio")
+function semAcento(s) {
+  return String(s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+}
+
+function renderTarefas() {
+  const bruto = (document.getElementById("tarefaClienteFiltro").value || "").trim();
+  const qNome = semAcento(bruto);
+  // busca por documento: ignora máscara e aceita CNPJ alfanumérico
+  const qDoc = bruto.replace(/[.\-\/\s]/g, "").toUpperCase();
+  const tasks = !bruto ? TAREFAS_CACHE : TAREFAS_CACHE.filter(t => {
+    if (qNome && semAcento(t.cliente_nome).includes(qNome)) return true;
+    const doc = String(t.cliente_cpf_cnpj || "").replace(/[.\-\/\s]/g, "").toUpperCase();
+    return qDoc.length >= 3 && doc.includes(qDoc);
+  });
   const abertas = tasks.filter(t => !t.executado);
   const agora = new Date();
   const vencidas = abertas.filter(t => new Date(t.data_lembrete.replace(" ", "T")) < agora);
@@ -1488,14 +1512,20 @@ async function loadTarefasView() {
   const futurasBox = document.getElementById("tarefasFuturas");
   futurasBox.innerHTML = futuras.length
     ? `<div class="tarefas-section-title">Próximas (${futuras.length})</div>` + futuras.map(t => renderRow(t, false)).join("")
-    : (vencidas.length ? "" : `<div class="empty-state">Nenhum compromisso pendente. Use "+ Novo compromisso" para agendar um follow-up.</div>`);
+    : (vencidas.length ? "" : `<div class="empty-state">${document.getElementById("tarefaClienteFiltro").value.trim() ? "Nenhum compromisso pendente para esse cliente." : `Nenhum compromisso pendente. Use "+ Novo compromisso" para agendar um follow-up.`}</div>`);
 
   renderConcluidas(tasks.filter(t => t.executado));
 }
 
 function renderConcluidas(concluidas) {
   const box = document.getElementById("tarefasConcluidas");
-  if (!concluidas.length) { box.innerHTML = ""; return; }
+  if (!concluidas.length) {
+    const filtroAtivo = (document.getElementById("tarefaClienteFiltro")?.value || "").trim();
+    box.innerHTML = filtroAtivo
+      ? `<div class="tarefas-section-title" style="margin-top:16px;">Concluídas (0)</div><div class="empty-state">Nenhuma tarefa concluída deste cliente.</div>`
+      : "";
+    return;
+  }
   // mais recentes no topo
   concluidas.sort((a, b) =>
     (b.executado_em || b.created_at || "").localeCompare(a.executado_em || a.created_at || ""));

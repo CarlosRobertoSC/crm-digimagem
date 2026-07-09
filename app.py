@@ -1458,7 +1458,8 @@ def list_tasks():
     db = get_db()
     clause, params = scope_filter_clause("user_id")
     rows = db.execute(f"""
-        SELECT t.*, c.nome as cliente_nome, u.nome as vendedor_nome FROM tasks t
+        SELECT t.*, c.nome as cliente_nome, c.cpf_cnpj as cliente_cpf_cnpj,
+               u.nome as vendedor_nome FROM tasks t
         LEFT JOIN customers c ON c.id = t.customer_id
         LEFT JOIN users u ON u.id = t.user_id
         WHERE 1=1 {clause}
