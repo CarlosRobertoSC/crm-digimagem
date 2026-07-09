@@ -199,6 +199,10 @@
   .hist-event.etapa.ganho .hist-etapa-label b{color:#1fbf63;}
   .hist-event.etapa.perdido .hist-dot{background:rgba(255,80,80,.12);border-color:var(--urgent);}
   .hist-event.etapa.perdido .hist-etapa-label b{color:var(--urgent);}
+  .hist-event.valor .hist-dot{background:rgba(255,196,0,.12);border:1px solid #d9a400;}
+  .hist-valor-label{font-size:12.5px;padding-top:2px;}
+  .hist-valor-label b{color:#e6b31e;}
+  .hist-valor-antigo{color:var(--text-muted);text-decoration:line-through;margin-right:6px;}
   .hist-motivo-perda{font-size:11.5px;color:var(--text-muted);margin-top:3px;line-height:1.5;}
   .hist-motivo-perda b{color:var(--urgent);font-weight:600;}
   .hist-event.nota .hist-dot{background:var(--surface-raised);border:1px solid var(--border);}
@@ -2160,6 +2164,18 @@ async function renderHistorico() {
   }
   box.innerHTML = data.eventos.map(ev => {
     const quando = fmtDataHist(ev.data);
+    if (ev.tipo === "valor") {
+      const fmtV = v => "R$ " + Number(v || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      const inicial = ev.valor_anterior === null || ev.valor_anterior === undefined;
+      return `
+        <div class="hist-event valor">
+          <div class="hist-dot">💰</div>
+          <div class="hist-valor-label">${inicial
+            ? `Valor inicial do negócio: <b>${fmtV(ev.valor_novo)}</b>`
+            : `Valor alterado: <span class="hist-valor-antigo">${fmtV(ev.valor_anterior)}</span> → <b>${fmtV(ev.valor_novo)}</b>`}</div>
+          <div class="hist-meta">${quando}${ev.autor_nome ? " · por " + esc(ev.autor_nome) : ""}</div>
+        </div>`;
+    }
     if (ev.tipo === "etapa") {
       const de = ev.etapa_anterior ? `${esc(ETAPA_LABEL[ev.etapa_anterior] || ev.etapa_anterior)} → ` : "Negócio criado em ";
       const classeFechamento = ev.etapa_nova === "fechado_ganho" ? " ganho"

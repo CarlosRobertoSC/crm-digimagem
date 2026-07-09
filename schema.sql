@@ -103,6 +103,19 @@ CREATE TABLE IF NOT EXISTS deal_note_anexos (
 );
 
 CREATE INDEX IF NOT EXISTS idx_deal_notes_deal ON deal_notes(deal_id);
+
+-- 💰 Histórico de valores do negócio: valor inicial (valor_anterior NULL)
+-- e cada alteração posterior. Alimenta a linha do tempo da negociação.
+CREATE TABLE IF NOT EXISTS deal_value_history (
+    id              TEXT PRIMARY KEY,
+    deal_id         TEXT NOT NULL REFERENCES deals(id) ON DELETE CASCADE,
+    valor_anterior  REAL,
+    valor_novo      REAL NOT NULL,
+    user_id         TEXT REFERENCES users(id),
+    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_deal_value_deal ON deal_value_history(deal_id);
 CREATE INDEX IF NOT EXISTS idx_deal_notes_user ON deal_notes(user_id);
 CREATE INDEX IF NOT EXISTS idx_stage_history_data ON deal_stage_history(data_transicao);
 CREATE INDEX IF NOT EXISTS idx_stage_history_etapa_nova ON deal_stage_history(etapa_nova);

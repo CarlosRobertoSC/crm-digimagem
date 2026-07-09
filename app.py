@@ -452,6 +452,10 @@ def run_alert_engine():
             VALUES (?,?,NULL,'novo_lead',?,?)
         """, (new_id(), did, c["responsavel_id"], now_iso()))
         db.execute("""
+            INSERT INTO deal_value_history (id, deal_id, valor_anterior, valor_novo, user_id, created_at)
+            VALUES (?,?,NULL,0,?,?)
+        """, (new_id(), did, c["responsavel_id"], now_iso()))
+        db.execute("""
             INSERT INTO tasks (id, customer_id, deal_id, user_id, descricao, tipo_atividade, data_lembrete)
             VALUES (?,?,?,?,?,'follow_up',?)
         """, (new_id(), c["id"], did, c["responsavel_id"],
@@ -1038,6 +1042,11 @@ def create_deal():
     """, (did, body["customer_id"], user_id, body["titulo"],
           etapa_inicial, body.get("valor_estimado", 0), body.get("data_prevista_fechamento"),
           categoria, produto_software))
+    # 💰 valor inicial entra no histórico (valor_anterior NULL = "inicial")
+    db.execute("""
+        INSERT INTO deal_value_history (id, deal_id, valor_anterior, valor_novo, user_id, created_at)
+        VALUES (?,?,NULL,?,?,?)
+    """, (new_id(), did, body.get("valor_estimado", 0) or 0, user_id, now_iso()))
     db.execute("""
         INSERT INTO deal_stage_history (id, deal_id, etapa_anterior, etapa_nova, user_id, data_transicao)
         VALUES (?,?,NULL,?,?,?)
@@ -1221,6 +1230,11 @@ def deal_historico(deal_id):
         LEFT JOIN users u ON u.id = h.user_id
         WHERE h.deal_id = ?
     """, (deal_id,)).fetchall()
+    valores = db.execute("""
+        SELECT v.*, u.nome as autor_nome FROM deal_value_history v
+        LEFT JOIN users u ON u.id = v.user_id
+        WHERE v.deal_id = ?
+    """, (deal_id,)).fetchall()
     eventos = (
         [{"tipo": "nota", "id": n["id"], "conteudo": n["conteudo"], "etapa_funil": n["etapa_funil"],
           "autor_nome": n["autor_nome"], "autor_id": n["user_id"], "autor_role": n["autor_role"],
@@ -1230,6 +1244,9 @@ def deal_historico(deal_id):
             "autor_nome": e["autor_nome"], "data": e["data_transicao"],
             "motivo_perda": e["motivo_perda"], "motivo_perda_detalhe": e["motivo_perda_detalhe"]}
            for e in etapas]
+        + [{"tipo": "valor", "valor_anterior": v["valor_anterior"], "valor_novo": v["valor_novo"],
+            "autor_nome": v["autor_nome"], "data": v["created_at"]}
+           for v in valores]
     )
     eventos.sort(key=lambda ev: (ev["data"], 0 if ev["tipo"] == "etapa" else 1))
     return jsonify({"deal": dict(d), "eventos": eventos})
@@ -1325,6 +1342,17 @@ def update_deal(deal_id):
         UPDATE deals SET titulo = ?, valor_estimado = ?, data_prevista_fechamento = ?, updated_at = ?
         WHERE id = ?
     """, (titulo, valor, data_prevista, now_iso(), deal_id))
+    # 💰 mudou o valor? entra no histórico (imutável, como o resto)
+    try:
+        valor_num = float(valor or 0)
+    except (TypeError, ValueError):
+        valor_num = 0.0
+    valor_antigo = float(existing["valor_estimado"] or 0)
+    if valor_num != valor_antigo:
+        db.execute("""
+            INSERT INTO deal_value_history (id, deal_id, valor_anterior, valor_novo, user_id, created_at)
+            VALUES (?,?,?,?,?,?)
+        """, (new_id(), deal_id, valor_antigo, valor_num, g.current_user["id"], now_iso()))
     audit("update", "deals", deal_id, body)
     db.commit()
     return jsonify({"ok": True})
