@@ -294,6 +294,50 @@ def validar_cpf_cnpj_ou_erro(valor):
     return None, "CPF/CNPJ inválido — use 11 caracteres (CPF) ou 14 (CNPJ)."
 
 
+# ------------------------------------------------------------------
+# 🖨 Equipamentos Fujifilm que o cliente possui (campo estruturado).
+# Os marcados como compatíveis alimentam a "cobertura de oferta" do
+# software Revele Momentos.
+# ------------------------------------------------------------------
+EQUIPAMENTOS = {
+    "ask300": "ASK-300", "ask400": "ASK-400",
+    "dx100": "Frontier DX100", "de100": "Frontier DE100",
+    "de100xd": "Frontier DE100-XD", "dx400": "Frontier Smartlab DX400",
+    "minilab": "Minilab (química)",
+}
+EQUIPAMENTOS_COMPATIVEIS_SOFTWARE = ("ask300", "ask400", "dx100", "de100", "de100xd", "dx400")
+
+
+def normalizar_equipamentos(valor):
+    """Aceita lista ou JSON string; mantém só slugs conhecidos.
+    Retorna JSON string ou None (nenhum equipamento)."""
+    itens = valor
+    if isinstance(valor, str):
+        try:
+            itens = json.loads(valor)
+        except Exception:
+            itens = []
+    if not isinstance(itens, list):
+        itens = []
+    itens = [i for i in itens if i in EQUIPAMENTOS]
+    return json.dumps(itens) if itens else None
+
+
+def _clientes_sem_oferta_sql(alias="c"):
+    """(fragmento_like, params) para clientes com equipamento compatível e
+    nenhum negócio de software jamais criado."""
+    likes = " OR ".join(f"{alias}.equipamentos LIKE ?" for _ in EQUIPAMENTOS_COMPATIVEIS_SOFTWARE)
+    params = [f'%"{s}"%' for s in EQUIPAMENTOS_COMPATIVEIS_SOFTWARE]
+    return likes, params
+
+
+def normalizar_telefone(v):
+    """Telefones são guardados apenas com dígitos (DDI+DDD+número) —
+    exatamente o formato que o wa.me e futuras integrações exigem."""
+    d = re.sub(r"\D", "", str(v or ""))
+    return d or None
+
+
 def _int_or_none(v):
     """Converte para inteiro positivo, ou None (usado no ciclo de recompra)."""
     try:
@@ -707,6 +751,13 @@ def list_customers():
         )
         params += [q_like] * 6
 
+    # Filtro por equipamento (?equipamento=ask400 etc.)
+    filtro_equip = ""
+    eq = (request.args.get("equipamento") or "").strip()
+    if eq in EQUIPAMENTOS:
+        filtro_equip = " AND c.equipamentos LIKE ?"
+        params.append(f'%"{eq}"%')
+
     # Paginação opcional (?limit=&offset=). Sem limit, mantém o comportamento
     # atual de retornar tudo — os seletores de cliente do frontend dependem disso.
     try:
@@ -722,7 +773,7 @@ def list_customers():
     rows = db.execute(f"""
         SELECT c.*, u.nome as responsavel_nome FROM customers c
         LEFT JOIN users u ON u.id = c.responsavel_id
-        WHERE 1=1 {clause}{filtro_ativo}{filtro_busca}
+        WHERE 1=1 {clause}{filtro_ativo}{filtro_busca}{filtro_equip}
         ORDER BY c.nome{clausula_limite}
     """, params).fetchall()
     return jsonify([dict(r) for r in rows])
@@ -769,13 +820,14 @@ def create_customer():
     db.execute("""
         INSERT INTO customers (id, nome, whatsapp_id, telefone, email, cpf_cnpj, endereco, cep,
             cidade, estado, data_ultima_compra, status_fidelidade, responsavel_id, origem, observacoes,
-            recompra_dias, proxima_recompra)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-    """, (cid, body["nome"], body.get("whatsapp_id"), body.get("telefone"), body.get("email"),
+            recompra_dias, proxima_recompra, equipamentos)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    """, (cid, body["nome"], normalizar_telefone(body.get("whatsapp_id")), normalizar_telefone(body.get("telefone")), body.get("email"),
           cpf_cnpj_norm, body.get("endereco"), body.get("cep"), body.get("cidade"), body.get("estado"),
           body.get("data_ultima_compra"), body.get("status_fidelidade", "novo"),
           responsavel_id, body.get("origem"), body.get("observacoes"),
-          recompra_dias, _hoje_mais_dias(recompra_dias) if recompra_dias else None))
+          recompra_dias, _hoje_mais_dias(recompra_dias) if recompra_dias else None,
+          normalizar_equipamentos(body.get("equipamentos"))))
     audit("create", "customers", cid, body)
     db.commit()
     return jsonify({"id": cid}), 201
@@ -796,8 +848,14 @@ def update_customer(customer_id):
         if erro_doc:
             return jsonify({"error": erro_doc}), 400
         body["cpf_cnpj"] = doc_norm
+    if "equipamentos" in body:
+        body["equipamentos"] = normalizar_equipamentos(body.get("equipamentos"))
+    for _tel in ("telefone", "whatsapp_id"):
+        if _tel in body:
+            body[_tel] = normalizar_telefone(body.get(_tel))
     campos = ["nome", "whatsapp_id", "telefone", "email", "cpf_cnpj", "endereco", "cep",
-              "cidade", "estado", "data_ultima_compra", "status_fidelidade", "observacoes", "ativo"]
+              "cidade", "estado", "data_ultima_compra", "status_fidelidade", "observacoes", "ativo",
+              "equipamentos"]
     valores = {c: body.get(c, existing[c]) for c in campos}
     if "ativo" in body:
         valores["ativo"] = 1 if body.get("ativo") in (1, "1", True, "true") else 0
@@ -1713,11 +1771,18 @@ def list_lembretes():
                COALESCE(SUM(CASE WHEN status = 'ganho' THEN 1 ELSE 0 END), 0) as ganhas
         FROM deals WHERE user_id = ? AND categoria = 'software' AND created_at >= ?
     """, (uid, inicio_mes)).fetchone()
+    likes_eq, params_eq = _clientes_sem_oferta_sql("customers")
+    sem_oferta = db.execute(f"""
+        SELECT COUNT(*) c FROM customers
+        WHERE ativo = 1 AND responsavel_id = ? AND ({likes_eq})
+          AND NOT EXISTS (SELECT 1 FROM deals d WHERE d.customer_id = customers.id AND d.categoria = 'software')
+    """, [uid] + params_eq).fetchone()["c"]
     return jsonify({
         "hoje": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
         "compromissos": [dict(r) for r in compromissos],
         "delegadas": [dict(r) for r in delegadas],
-        "meta_software": {"ofertas_mes": sw["ofertas"], "ganhas_mes": sw["ganhas"]},
+        "meta_software": {"ofertas_mes": sw["ofertas"], "ganhas_mes": sw["ganhas"],
+                          "clientes_sem_oferta": sem_oferta},
     })
 
 
@@ -2022,8 +2087,33 @@ def report_software():
             "etapa_funil": d["etapa_funil"], "created_at": d["created_at"],
         })
     usuarios = [{**m, "meta_ok": m["ganhas"] >= META_SOFTWARE} for m in metas.values()]
+
+    # 🖨 Cobertura de oferta: clientes com impressora COMPATÍVEL que nunca
+    # receberam uma oferta de software — a lista de abordagem da equipe.
+    clause_cli, params_cli = report_scope_clause("c.responsavel_id")
+    likes, params_likes = _clientes_sem_oferta_sql("c")
+    cobertura_rows = db.execute(f"""
+        SELECT c.id, c.nome, c.equipamentos, u.nome as responsavel_nome
+        FROM customers c LEFT JOIN users u ON u.id = c.responsavel_id
+        WHERE c.ativo = 1 AND ({likes}) {clause_cli}
+          AND NOT EXISTS (SELECT 1 FROM deals d WHERE d.customer_id = c.id AND d.categoria = 'software')
+        ORDER BY c.nome
+    """, params_likes + params_cli).fetchall()
+    cobertura = []
+    for r in cobertura_rows:
+        try:
+            slugs = json.loads(r["equipamentos"] or "[]")
+        except Exception:
+            slugs = []
+        cobertura.append({
+            "customer_id": r["id"], "nome": r["nome"],
+            "equipamentos": [EQUIPAMENTOS[s] for s in slugs if s in EQUIPAMENTOS],
+            "responsavel_nome": r["responsavel_nome"],
+        })
+
     return jsonify({"periodo": {"inicio": inicio, "fim": fim}, "meta_por_usuario": META_SOFTWARE,
-                    "usuarios": usuarios, "totais": totais, "negocios": negocios})
+                    "usuarios": usuarios, "totais": totais, "negocios": negocios,
+                    "cobertura": cobertura})
 
 
 @app.get("/api/reports/origem-leads")
@@ -2155,6 +2245,7 @@ def migrate_missing_columns(conn):
         "customers": {
             "recompra_dias": "INTEGER",
             "proxima_recompra": "TEXT",
+            "equipamentos": "TEXT",
         },
         "deals": {
             "origem_recompra": "INTEGER NOT NULL DEFAULT 0",
