@@ -1,0 +1,9 @@
+crm.db
+crm_teste_antigo.db
+__pycache__/
+*.pyc
+server.log
+.DS_Store
+venv/
+.venv/
+*.env
