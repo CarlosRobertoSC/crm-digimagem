@@ -430,7 +430,9 @@ def run_alert_engine():
     # negociar) e um compromisso que aparece no 📌 do Feed de Alertas do
     # responsável. Antiduplicação: só gera se o cliente NÃO tiver nenhum
     # negócio aberto — o ciclo continua quando o negócio atual for fechado.
-    hoje = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    # Gera até 1 dia ANTES da data de recompra, para o lembrete aparecer no
+    # feed no máximo 24 horas antes do contato (regra do negócio).
+    ate_amanha_recompra = (datetime.now(timezone.utc) + timedelta(days=1)).strftime("%Y-%m-%d")
     devidos = db.execute("""
         SELECT * FROM customers
         WHERE recompra_dias IS NOT NULL AND recompra_dias > 0
@@ -439,7 +441,7 @@ def run_alert_engine():
           AND NOT EXISTS (
               SELECT 1 FROM deals d WHERE d.customer_id = customers.id AND d.status = 'aberto'
           )
-    """, (hoje,)).fetchall()
+    """, (ate_amanha_recompra,)).fetchall()
     for c in devidos:
         did = new_id()
         db.execute("""
@@ -460,7 +462,7 @@ def run_alert_engine():
             VALUES (?,?,?,?,?,'follow_up',?)
         """, (new_id(), c["id"], did, c["responsavel_id"],
               f'🔁 Recompra programada: contatar {c["nome"]} para nova venda de insumos',
-              (datetime.now(timezone.utc) + timedelta(hours=23)).strftime("%Y-%m-%d %H:%M:%S")))
+              f'{c["proxima_recompra"]} 12:00:00'))
         # desarma a agenda; o ciclo é reprogramado quando este negócio for fechado
         db.execute("UPDATE customers SET proxima_recompra = NULL WHERE id = ?", (c["id"],))
         audit("create", "deals", did, {"origem": "recompra_programada", "customer_id": c["id"]})
@@ -470,11 +472,18 @@ def run_alert_engine():
 
 def _upsert_insight(customer_id, deal_id, user_id, tipo, prioridade, descricao, dados_extra):
     db = get_db()
+    # Não duplica se já há alerta ATIVO do mesmo tipo para o cliente, nem se um
+    # alerta desse tipo foi criado nos últimos 7 dias (mesmo que marcado como
+    # lido) — "Marcar lido" vale como um silêncio de 7 dias enquanto a condição
+    # persistir; se ela continuar depois disso, o alerta volta.
+    limite_silencio = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
     existente = db.execute("""
-        SELECT id FROM ai_insights WHERE customer_id = ? AND tipo_alerta = ? AND lido = 0
-    """, (customer_id, tipo)).fetchone()
+        SELECT id FROM ai_insights
+        WHERE customer_id = ? AND tipo_alerta = ?
+          AND (lido = 0 OR created_at >= ?)
+    """, (customer_id, tipo, limite_silencio)).fetchone()
     if existente:
-        return  # já existe alerta ativo desse tipo para esse cliente — não duplica
+        return
     db.execute("""
         INSERT INTO ai_insights (id, customer_id, deal_id, user_id, tipo_alerta, prioridade, descricao_insight, dados_extra)
         VALUES (?,?,?,?,?,?,?,?)
@@ -1108,6 +1117,18 @@ def move_deal_stage(deal_id):
           motivo_perda if nova_etapa == "fechado_perdido" else None,
           motivo_perda_detalhe if nova_etapa == "fechado_perdido" else None,
           now_iso()))
+
+    if nova_etapa == "fechado_ganho":
+        # Venda realizada: atualiza a última compra do cliente (a régua de
+        # inatividade zera na raiz) e resolve automaticamente os alertas
+        # ativos dele no feed — o aviso some sozinho, como deve ser.
+        db.execute("UPDATE customers SET data_ultima_compra = ? WHERE id = ?",
+                   (datetime.now(timezone.utc).strftime("%Y-%m-%d"), existing["customer_id"]))
+        db.execute("""
+            UPDATE ai_insights SET lido = 1
+            WHERE customer_id = ? AND lido = 0
+              AND tipo_alerta IN ('inatividade', 'abandono_funil', 'sugestao_conteudo')
+        """, (existing["customer_id"],))
 
     # 🔁 Recompra programada: ao FECHAR o negócio (ganho ou perdido), agenda o
     # próximo contato do cliente para daqui a N dias. O motor de alertas criará
