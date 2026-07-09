@@ -833,14 +833,15 @@ def create_customer():
     db.execute("""
         INSERT INTO customers (id, nome, whatsapp_id, telefone, email, cpf_cnpj, endereco, cep,
             cidade, estado, data_ultima_compra, status_fidelidade, responsavel_id, origem, observacoes,
-            recompra_dias, proxima_recompra, equipamentos)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            recompra_dias, proxima_recompra, equipamentos, rolos_mes_media)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, (cid, body["nome"], normalizar_telefone(body.get("whatsapp_id")), normalizar_telefone(body.get("telefone")), body.get("email"),
           cpf_cnpj_norm, body.get("endereco"), body.get("cep"), body.get("cidade"), body.get("estado"),
           body.get("data_ultima_compra"), body.get("status_fidelidade", "novo"),
           responsavel_id, body.get("origem"), body.get("observacoes"),
           recompra_dias, _hoje_mais_dias(recompra_dias) if recompra_dias else None,
-          normalizar_equipamentos(body.get("equipamentos"))))
+          normalizar_equipamentos(body.get("equipamentos")),
+          _int_or_none(body.get("rolos_mes_media"))))
     audit("create", "customers", cid, body)
     db.commit()
     return jsonify({"id": cid}), 201
@@ -866,9 +867,11 @@ def update_customer(customer_id):
     for _tel in ("telefone", "whatsapp_id"):
         if _tel in body:
             body[_tel] = normalizar_telefone(body.get(_tel))
+    if "rolos_mes_media" in body:
+        body["rolos_mes_media"] = _int_or_none(body.get("rolos_mes_media"))
     campos = ["nome", "whatsapp_id", "telefone", "email", "cpf_cnpj", "endereco", "cep",
               "cidade", "estado", "data_ultima_compra", "status_fidelidade", "observacoes", "ativo",
-              "equipamentos"]
+              "equipamentos", "rolos_mes_media"]
     valores = {c: body.get(c, existing[c]) for c in campos}
     if "ativo" in body:
         valores["ativo"] = 1 if body.get("ativo") in (1, "1", True, "true") else 0
@@ -1221,7 +1224,8 @@ def _deal_permitido_ou_erro(deal_id):
     regra de visibilidade. Retorna (deal, None) ou (None, resposta_erro)."""
     db = get_db()
     d = db.execute("""
-        SELECT d.*, c.nome as cliente_nome, u.nome as vendedor_nome
+        SELECT d.*, c.nome as cliente_nome, c.rolos_mes_media as cliente_rolos_mes,
+               u.nome as vendedor_nome
         FROM deals d
         JOIN customers c ON c.id = d.customer_id
         LEFT JOIN users u ON u.id = d.user_id
@@ -2295,6 +2299,7 @@ def migrate_missing_columns(conn):
             "recompra_dias": "INTEGER",
             "proxima_recompra": "TEXT",
             "equipamentos": "TEXT",
+            "rolos_mes_media": "INTEGER",
         },
         "deals": {
             "origem_recompra": "INTEGER NOT NULL DEFAULT 0",

@@ -1288,6 +1288,7 @@ async function showCustomer(customerId) {
     ${c.email ? `<div class="kv-row"><span>Email</span><span>${esc(c.email)}</span></div>` : ""}
     ${c.recompra_dias ? `<div class="kv-row"><span>🔁 Recompra</span><span>a cada ${esc(c.recompra_dias)} dias${c.proxima_recompra ? " · próx. contato " + esc(c.proxima_recompra.split("-").reverse().join("/")) : " · reprograma ao fechar o negócio atual"}</span></div>` : ""}
     ${(() => { let eq = []; try { eq = JSON.parse(c.equipamentos || "[]"); } catch {} return eq.length ? `<div class="kv-row"><span>🖨 Equipamentos</span><span style="text-align:right;max-width:60%;">${eq.map(s => esc(EQUIP_LABEL[s] || s)).join(" · ")}</span></div>` : ""; })()}
+    ${c.rolos_mes_media ? `<div class="kv-row"><span>📦 Rolos/mês</span><span>~${esc(c.rolos_mes_media)} rolo${c.rolos_mes_media > 1 ? "s" : ""} (média)</span></div>` : ""}
     ${enderecoCompleto ? `<div class="kv-row"><span>Endereço</span><span style="text-align:right;max-width:60%;">${esc(enderecoCompleto)}</span></div>` : ""}
     ${insightsHtml}
     ${dealsHtml}
@@ -2150,6 +2151,7 @@ async function renderHistorico() {
   document.getElementById("histSub").innerHTML =
     `${esc(d.cliente_nome)} · vendedor: <b>${esc(d.vendedor_nome || "—")}</b>` +
     ` · R$ ${Number(d.valor_estimado).toLocaleString("pt-BR")}` +
+    (d.cliente_rolos_mes ? ` · 📦 ~${esc(d.cliente_rolos_mes)} rolos/mês` : "") +
     ` · <span class="pill ${esc(d.status)}">${esc(ETAPA_LABEL[d.etapa_funil] || d.etapa_funil)}</span>`;
   const comoGestor = CURRENT_USER.role === "admin" && d.user_id && d.user_id !== CURRENT_USER.id;
   document.getElementById("histComposerHint").textContent =
@@ -2309,6 +2311,7 @@ const MODAL_CONFIG = {
       { name: "cidade", label: "Cidade", type: "text" },
       { name: "estado", label: "Estado (UF)", type: "select", options: UF_OPTIONS },
       { name: "equipamentos", label: "🖨 Equipamentos do cliente (impressoras Fujifilm)", type: "checkboxes", options: EQUIP_OPTIONS },
+      { name: "rolos_mes_media", label: "📦 Média mensal de rolos de papel (define a faixa de preço por rolo)", type: "number" },
       { name: "recompra_dias", label: "🔁 Recompra programada — contatar a cada N dias (vazio = desativado)", type: "number" },
       { name: "data_ultima_compra", label: "Última compra (opcional)", type: "date" },
     ],
@@ -2339,6 +2342,7 @@ const MODAL_CONFIG = {
       { name: "cidade", label: "Cidade", type: "text" },
       { name: "estado", label: "Estado (UF)", type: "select", options: UF_OPTIONS },
       { name: "equipamentos", label: "🖨 Equipamentos do cliente (impressoras Fujifilm)", type: "checkboxes", options: EQUIP_OPTIONS },
+      { name: "rolos_mes_media", label: "📦 Média mensal de rolos de papel (define a faixa de preço por rolo)", type: "number" },
       { name: "recompra_dias", label: "🔁 Recompra programada — contatar a cada N dias (vazio = desativado)", type: "number" },
       { name: "data_ultima_compra", label: "Última compra (opcional)", type: "date" },
       { name: "observacoes", label: "Observações", type: "text" },

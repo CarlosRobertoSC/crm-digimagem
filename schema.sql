@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS customers (
     recompra_dias       INTEGER,  -- 🔁 ciclo de recompra em dias (NULL = desativado)
     proxima_recompra    TEXT,     -- data agendada do próximo contato (YYYY-MM-DD)
     equipamentos        TEXT,     -- 🖨 JSON: equipamentos Fujifilm do cliente
+    rolos_mes_media     INTEGER,  -- 📦 média mensal de rolos de papel (precificação)
     responsavel_id      TEXT REFERENCES users(id) ON DELETE SET NULL,
     origem              TEXT,
     observacoes         TEXT,
