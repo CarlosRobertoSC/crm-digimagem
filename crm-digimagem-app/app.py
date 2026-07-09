@@ -331,6 +331,13 @@ def _clientes_sem_oferta_sql(alias="c"):
     return likes, params
 
 
+def normalizar_telefone(v):
+    """Telefones são guardados apenas com dígitos (DDI+DDD+número) —
+    exatamente o formato que o wa.me e futuras integrações exigem."""
+    d = re.sub(r"\D", "", str(v or ""))
+    return d or None
+
+
 def _int_or_none(v):
     """Converte para inteiro positivo, ou None (usado no ciclo de recompra)."""
     try:
@@ -815,7 +822,7 @@ def create_customer():
             cidade, estado, data_ultima_compra, status_fidelidade, responsavel_id, origem, observacoes,
             recompra_dias, proxima_recompra, equipamentos)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-    """, (cid, body["nome"], body.get("whatsapp_id"), body.get("telefone"), body.get("email"),
+    """, (cid, body["nome"], normalizar_telefone(body.get("whatsapp_id")), normalizar_telefone(body.get("telefone")), body.get("email"),
           cpf_cnpj_norm, body.get("endereco"), body.get("cep"), body.get("cidade"), body.get("estado"),
           body.get("data_ultima_compra"), body.get("status_fidelidade", "novo"),
           responsavel_id, body.get("origem"), body.get("observacoes"),
@@ -843,6 +850,9 @@ def update_customer(customer_id):
         body["cpf_cnpj"] = doc_norm
     if "equipamentos" in body:
         body["equipamentos"] = normalizar_equipamentos(body.get("equipamentos"))
+    for _tel in ("telefone", "whatsapp_id"):
+        if _tel in body:
+            body[_tel] = normalizar_telefone(body.get(_tel))
     campos = ["nome", "whatsapp_id", "telefone", "email", "cpf_cnpj", "endereco", "cep",
               "cidade", "estado", "data_ultima_compra", "status_fidelidade", "observacoes", "ativo",
               "equipamentos"]

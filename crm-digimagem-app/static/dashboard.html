@@ -253,6 +253,10 @@
   .check-chip{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;color:var(--text-primary);background:var(--surface-raised);border:1px solid var(--border);border-radius:20px;padding:5px 10px;cursor:pointer;transition:.15s;}
   .check-chip:hover{border-color:var(--signal);}
   .check-chip input{accent-color:var(--signal);cursor:pointer;}
+  .phone-field{display:flex;gap:6px;}
+  .phone-field select{max-width:118px;background:var(--surface-raised);border:1px solid var(--border);border-radius:8px;padding:9px 6px;color:var(--text-primary);font-size:12px;cursor:pointer;}
+  .phone-field select:focus{outline:none;border-color:var(--signal);}
+  .phone-field input{flex:1;min-width:0;}
   .modal-actions{display:flex;gap:8px;margin-top:16px;flex-shrink:0;}
   .modal-actions .btn-primary{flex:1;justify-content:center;}
   .modal-cancel{
@@ -1275,7 +1279,8 @@ async function showCustomer(customerId) {
     <div class="kv-row"><span>Última compra</span><span>${diasSemComprar !== null ? diasSemComprar + " dias atrás" : "sem registro"}</span></div>
     <div class="kv-row"><span>Negócios ativos</span><span>${data.deals.filter(d=>d.status==='aberto').length}</span></div>
     ${c.cpf_cnpj ? `<div class="kv-row"><span>CPF/CNPJ</span><span>${esc(fmtCpfCnpj(c.cpf_cnpj))}</span></div>` : ""}
-    ${c.telefone ? `<div class="kv-row"><span>Telefone</span><span>${esc(c.telefone)}</span></div>` : ""}
+    ${c.whatsapp_id ? `<div class="kv-row"><span>📱 WhatsApp</span><span>${esc(fmtTelefone(c.whatsapp_id))}</span></div>` : ""}
+    ${c.telefone ? `<div class="kv-row"><span>☎ Telefone</span><span>${esc(fmtTelefone(c.telefone))}</span></div>` : ""}
     ${c.email ? `<div class="kv-row"><span>Email</span><span>${esc(c.email)}</span></div>` : ""}
     ${c.recompra_dias ? `<div class="kv-row"><span>🔁 Recompra</span><span>a cada ${esc(c.recompra_dias)} dias${c.proxima_recompra ? " · próx. contato " + esc(c.proxima_recompra.split("-").reverse().join("/")) : " · reprograma ao fechar o negócio atual"}</span></div>` : ""}
     ${(() => { let eq = []; try { eq = JSON.parse(c.equipamentos || "[]"); } catch {} return eq.length ? `<div class="kv-row"><span>🖨 Equipamentos</span><span style="text-align:right;max-width:60%;">${eq.map(s => esc(EQUIP_LABEL[s] || s)).join(" · ")}</span></div>` : ""; })()}
@@ -1297,8 +1302,10 @@ function completeTask(taskId, customerId) {
 }
 
 function openWhatsapp(numero) {
-  const digitos = String(numero || "").replace(/\D/g, "");
+  let digitos = String(numero || "").replace(/\D/g, "");
   if (!digitos) { alert("Este cliente não tem número de WhatsApp cadastrado."); return; }
+  // dados antigos sem DDI (10-11 dígitos) são brasileiros: prefixa o 55
+  if (digitos.length === 10 || digitos.length === 11) digitos = "55" + digitos;
   window.open(`https://wa.me/${digitos}`, "_blank");
 }
 
@@ -1343,7 +1350,7 @@ async function loadClientesView() {
       ${verTodos ? `<td>${esc(c.responsavel_nome || "—")}</td>` : ""}
       <td>${esc([c.cidade, c.estado].filter(Boolean).join("/") || "—")}</td>
       <td>${c.data_ultima_compra ? new Date(c.data_ultima_compra).toLocaleDateString("pt-BR") : "—"}</td>
-      <td>${esc(c.whatsapp_id || "—")}</td>
+      <td>${c.whatsapp_id ? esc(fmtTelefone(c.whatsapp_id)) : "—"}${c.telefone ? `<div style="font-size:10.5px;color:var(--text-muted);margin-top:2px;">☎ ${esc(fmtTelefone(c.telefone))}</div>` : ""}</td>
       <td onclick="event.stopPropagation()">
         <button class="btn-mini" onclick="SELECTED_CUSTOMER_ID='${c.id}'; openModal('editar_cliente')">Editar</button>
         <button class="btn-mini" onclick="toggleClienteAtivo('${c.id}', ${c.ativo ? "false" : "true"})">${c.ativo ? "Desativar" : "Reativar"}</button>
@@ -1392,7 +1399,7 @@ async function loadWhatsappView() {
   }
   list.innerHTML = channels.map(ch => `
     <div class="channel-row">
-      <span>${esc(ch.numero_whatsapp)}</span>
+      <span>${esc(fmtTelefone(ch.numero_whatsapp))}</span>
       <button onclick="removeChannel('${ch.id}')" title="Remover">✕</button>
     </div>
   `).join("");
@@ -1596,6 +1603,63 @@ const EQUIP_LABEL = {
   dx400: "Frontier Smartlab DX400", minilab: "Minilab (química)",
 };
 const EQUIP_OPTIONS = Object.entries(EQUIP_LABEL);
+
+// ------------------------------------------------------------------
+// 📞 Telefones — padrão internacional: DDI + DDD + número (só dígitos no
+// banco). Brasil (+55) é o padrão do seletor.
+// ------------------------------------------------------------------
+const PAISES_TEL = [
+  ["55","🇧🇷 +55 Brasil"],["351","🇵🇹 +351 Portugal"],["1","🇺🇸 +1 EUA/Canadá"],
+  ["54","🇦🇷 +54 Argentina"],["595","🇵🇾 +595 Paraguai"],["598","🇺🇾 +598 Uruguai"],
+  ["56","🇨🇱 +56 Chile"],["57","🇨🇴 +57 Colômbia"],["58","🇻🇪 +58 Venezuela"],
+  ["51","🇵🇪 +51 Peru"],["591","🇧🇴 +591 Bolívia"],["593","🇪🇨 +593 Equador"],
+  ["52","🇲🇽 +52 México"],["506","🇨🇷 +506 Costa Rica"],["507","🇵🇦 +507 Panamá"],
+  ["53","🇨🇺 +53 Cuba"],["49","🇩🇪 +49 Alemanha"],["33","🇫🇷 +33 França"],
+  ["34","🇪🇸 +34 Espanha"],["39","🇮🇹 +39 Itália"],["44","🇬🇧 +44 Reino Unido"],
+  ["353","🇮🇪 +353 Irlanda"],["31","🇳🇱 +31 Holanda"],["32","🇧🇪 +32 Bélgica"],
+  ["41","🇨🇭 +41 Suíça"],["43","🇦🇹 +43 Áustria"],["45","🇩🇰 +45 Dinamarca"],
+  ["46","🇸🇪 +46 Suécia"],["47","🇳🇴 +47 Noruega"],["358","🇫🇮 +358 Finlândia"],
+  ["48","🇵🇱 +48 Polônia"],["420","🇨🇿 +420 Tchéquia"],["30","🇬🇷 +30 Grécia"],
+  ["90","🇹🇷 +90 Turquia"],["7","🇷🇺 +7 Rússia"],["380","🇺🇦 +380 Ucrânia"],
+  ["81","🇯🇵 +81 Japão"],["82","🇰🇷 +82 Coreia do Sul"],["86","🇨🇳 +86 China"],
+  ["852","🇭🇰 +852 Hong Kong"],["886","🇹🇼 +886 Taiwan"],["91","🇮🇳 +91 Índia"],
+  ["62","🇮🇩 +62 Indonésia"],["63","🇵🇭 +63 Filipinas"],["65","🇸🇬 +65 Singapura"],
+  ["66","🇹🇭 +66 Tailândia"],["84","🇻🇳 +84 Vietnã"],["61","🇦🇺 +61 Austrália"],
+  ["64","🇳🇿 +64 Nova Zelândia"],["27","🇿🇦 +27 África do Sul"],["234","🇳🇬 +234 Nigéria"],
+  ["244","🇦🇴 +244 Angola"],["258","🇲🇿 +258 Moçambique"],["238","🇨🇻 +238 Cabo Verde"],
+  ["245","🇬🇼 +245 Guiné-Bissau"],["239","🇸🇹 +239 São Tomé"],["971","🇦🇪 +971 Emirados"],
+  ["972","🇮🇱 +972 Israel"],["966","🇸🇦 +966 Arábia Saudita"],["20","🇪🇬 +20 Egito"],
+];
+// para detectar o DDI de um número salvo: códigos mais longos primeiro
+const PAISES_TEL_SORTED = [...PAISES_TEL].sort((a, b) => b[0].length - a[0].length);
+
+function formatLocalPhone(d, cc) {
+  if (!d) return "";
+  if (cc === "55") {
+    if (d.length <= 2) return `(${d}`;
+    if (d.length <= 6) return `(${d.slice(0, 2)}) ${d.slice(2)}`;
+    if (d.length <= 10) return `(${d.slice(0, 2)}) ${d.slice(2, 6)}-${d.slice(6)}`;
+    return `(${d.slice(0, 2)}) ${d.slice(2, 7)}-${d.slice(7, 11)}`;
+  }
+  return d.replace(/(\d{4})(?=\d)/g, "$1 ").trim();
+}
+
+function maskPhone(input) {
+  const cc = document.getElementById(input.id + "_cc")?.value || "55";
+  const d = input.value.replace(/\D/g, "").slice(0, cc === "55" ? 11 : 15);
+  input.value = formatLocalPhone(d, cc);
+}
+
+function fmtTelefone(v) {
+  const d = String(v || "").replace(/\D/g, "");
+  if (!d) return "";
+  // 10-11 dígitos = número brasileiro sem DDI (dados antigos)
+  if (d.length === 10 || d.length === 11) return formatLocalPhone(d, "55");
+  if (d.startsWith("55") && (d.length === 12 || d.length === 13)) return "+55 " + formatLocalPhone(d.slice(2), "55");
+  const pais = PAISES_TEL_SORTED.find(p => d.startsWith(p[0]) && d.length > p[0].length + 4);
+  if (pais) return `+${pais[0]} ${d.slice(pais[0].length).replace(/(\d{4})(?=\d)/g, "$1 ").trim()}`;
+  return d;
+}
 
 function _ultimoDiaMes(ano, mes) {
   return new Date(ano, mes, 0).getDate();
@@ -2217,8 +2281,8 @@ const MODAL_CONFIG = {
     fields: [
       { name: "nome", label: "Nome", type: "text", required: true },
       { name: "cpf_cnpj", label: "CPF ou CNPJ", type: "text" },
-      { name: "whatsapp_id", label: "WhatsApp (só números, com DDI+DDD)", type: "text" },
-      { name: "telefone", label: "Telefone fixo (opcional)", type: "text" },
+      { name: "whatsapp_id", label: "📱 WhatsApp — DDD + número", type: "phone" },
+      { name: "telefone", label: "☎ Telefone fixo (opcional) — DDD + número", type: "phone" },
       { name: "email", label: "Email (opcional)", type: "email" },
       { name: "status_fidelidade", label: "Status", type: "select",
         options: [["novo","Novo"], ["recorrente","Recorrente"], ["vip","VIP"]] },
@@ -2247,8 +2311,8 @@ const MODAL_CONFIG = {
     fields: [
       { name: "nome", label: "Nome", type: "text", required: true },
       { name: "cpf_cnpj", label: "CPF ou CNPJ", type: "text" },
-      { name: "whatsapp_id", label: "WhatsApp (só números, com DDI+DDD)", type: "text" },
-      { name: "telefone", label: "Telefone fixo (opcional)", type: "text" },
+      { name: "whatsapp_id", label: "📱 WhatsApp — DDD + número", type: "phone" },
+      { name: "telefone", label: "☎ Telefone fixo (opcional) — DDD + número", type: "phone" },
       { name: "email", label: "Email (opcional)", type: "email" },
       { name: "status_fidelidade", label: "Status", type: "select",
         options: [["novo","Novo"], ["recorrente","Recorrente"], ["vip","VIP"], ["inativo","Inativo"], ["perdido","Perdido"]] },
@@ -2573,6 +2637,14 @@ async function openModal(kind) {
         <select id="modal_${f.name}">${f.options.map(([v,l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join("")}</select>
       </div>`;
     }
+    if (f.type === "phone") {
+      return `<div class="field"><label>${f.label}</label>
+        <div class="phone-field">
+          <select id="modal_${f.name}_cc">${PAISES_TEL.map(([c, l]) => `<option value="${c}"${c === "55" ? " selected" : ""}>${l}</option>`).join("")}</select>
+          <input type="tel" id="modal_${f.name}" placeholder="(48) 99999-9999" oninput="maskPhone(this)" ${f.required ? "required" : ""}>
+        </div>
+      </div>`;
+    }
     if (f.type === "checkboxes") {
       return `<div class="field"><label>${f.label}</label>
         <div class="check-group" id="modal_${f.name}">
@@ -2592,7 +2664,17 @@ async function openModal(kind) {
     fields.forEach(f => {
       const el = document.getElementById(`modal_${f.name}`);
       if (!el || valoresAtuais[f.name] === undefined || valoresAtuais[f.name] === null) return;
-      if (f.type === "checkboxes") {
+      if (f.type === "phone") {
+        const d = String(valoresAtuais[f.name]).replace(/\D/g, "");
+        let cc = "55", resto = d;
+        if (d.length >= 12) {
+          const pais = PAISES_TEL_SORTED.find(p => d.startsWith(p[0]));
+          if (pais) { cc = pais[0]; resto = d.slice(pais[0].length); }
+        }
+        const ccSel = document.getElementById(`modal_${f.name}_cc`);
+        if (ccSel) ccSel.value = cc;
+        el.value = formatLocalPhone(resto, cc);
+      } else if (f.type === "checkboxes") {
         let marcados = valoresAtuais[f.name];
         if (typeof marcados === "string") { try { marcados = JSON.parse(marcados); } catch { marcados = []; } }
         if (!Array.isArray(marcados)) marcados = [];
@@ -2625,6 +2707,16 @@ async function submitModal() {
     const el = document.getElementById(`modal_${f.name}`);
     if (f.type === "checkboxes") {
       values[f.name] = [...el.querySelectorAll("input:checked")].map(cb => cb.value);
+      continue;
+    }
+    if (f.type === "phone") {
+      const digitos = el.value.replace(/\D/g, "");
+      if (f.required && !digitos) {
+        errBox.textContent = `Preencha o campo "${f.label}".`;
+        errBox.style.display = "block";
+        return;
+      }
+      if (digitos) values[f.name] = document.getElementById(`modal_${f.name}_cc`).value + digitos;
       continue;
     }
     const val = el.value.trim ? el.value.trim() : el.value;
