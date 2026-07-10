@@ -1819,25 +1819,290 @@ def list_lembretes():
           AND dt.data_prazo IS NOT NULL AND dt.data_prazo <= ?
         ORDER BY dt.data_prazo
     """, (uid, ate_amanha)).fetchall()
-    inicio_mes = datetime.now(timezone.utc).strftime("%Y-%m-01")
-    sw = db.execute("""
-        SELECT COUNT(*) as ofertas,
-               COALESCE(SUM(CASE WHEN status = 'ganho' THEN 1 ELSE 0 END), 0) as ganhas
-        FROM deals WHERE user_id = ? AND categoria = 'software' AND created_at >= ?
-    """, (uid, inicio_mes)).fetchone()
+    # 🎯 Metas ativas do usuário ainda NÃO atingidas (bloco 📌 do feed)
     likes_eq, params_eq = _clientes_sem_oferta_sql("customers")
     sem_oferta = db.execute(f"""
         SELECT COUNT(*) c FROM customers
         WHERE ativo = 1 AND responsavel_id = ? AND ({likes_eq})
           AND NOT EXISTS (SELECT 1 FROM deals d WHERE d.customer_id = customers.id AND d.categoria = 'software')
     """, [uid] + params_eq).fetchone()["c"]
+    metas_pendentes = []
+    for m in _metas_do_usuario(db, uid, g.current_user["role"]):
+        prog = _meta_progresso_map(db, m)
+        parts_ids = [p["id"] for p in _meta_participantes(db, m)]
+        meu = prog.get(uid, 0)
+        total = sum(q for u, q in prog.items() if u in parts_ids)
+        efetivo = total if m["apuracao"] == "coletiva" else meu
+        if efetivo >= m["quantidade"]:
+            continue
+        eh_software = m["tipo"] == "vendas" and (m["alvo_vendas"] or "") in (
+            "software_qualquer", "revele_momentos", "revele_momentos_frontier")
+        metas_pendentes.append({
+            "id": m["id"], "titulo": m["titulo"], "quantidade": m["quantidade"],
+            "progresso": efetivo, "apuracao": m["apuracao"], "tipo": m["tipo"],
+            "periodo_tipo": m["periodo_tipo"], "data_fim": m["data_fim"],
+            "clientes_sem_oferta": sem_oferta if eh_software else None,
+        })
     return jsonify({
         "hoje": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
         "compromissos": [dict(r) for r in compromissos],
         "delegadas": [dict(r) for r in delegadas],
-        "meta_software": {"ofertas_mes": sw["ofertas"], "ganhas_mes": sw["ganhas"],
-                          "clientes_sem_oferta": sem_oferta},
+        "metas": metas_pendentes,
     })
+
+
+# ------------------------------------------------------------------
+# 🎯 METAS configuráveis
+# - tipo 'vendas': o progresso conta SOZINHO pelos negócios GANHOS na janela
+#   de apuração (mês corrente / período definido / desde sempre).
+# - tipo 'manual': o usuário registra o progresso (+1 com nota) — histórico.
+# - apuração 'individual' (cada participante deve atingir o alvo) ou
+#   'coletiva' (a soma do grupo deve atingir o alvo).
+# RBAC: admin cria/exclui e vê tudo; vendedor vê apenas as metas dele.
+# ------------------------------------------------------------------
+ALVOS_VENDA_META = ("qualquer", "padrao", "software_qualquer",
+                    "revele_momentos", "revele_momentos_frontier")
+
+
+def _meta_situacao(m):
+    if m["status"] == "excluida":
+        return "excluida"
+    hoje = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if m["periodo_tipo"] == "periodo" and m["data_fim"] and m["data_fim"] < hoje:
+        return "encerrada"
+    return "ativa"
+
+
+def _meta_janela(m):
+    """(inicio, fim) da janela de apuração, comparáveis com timestamps."""
+    agora = datetime.now(timezone.utc)
+    if m["periodo_tipo"] == "mensal":
+        return agora.strftime("%Y-%m-01 00:00:00"), agora.strftime("%Y-%m-%d 23:59:59")
+    if m["periodo_tipo"] == "periodo":
+        return ((m["data_inicio"] or "1970-01-01") + " 00:00:00",
+                (m["data_fim"] or "9999-12-31") + " 23:59:59")
+    return "1970-01-01 00:00:00", "9999-12-31 23:59:59"
+
+
+def _meta_participantes(db, m):
+    if m["escopo"] == "individual":
+        return db.execute("SELECT id, nome, role FROM users WHERE id = ?",
+                          (m["escopo_user_id"],)).fetchall()
+    if m["escopo"] == "vendedores":
+        return db.execute("SELECT id, nome, role FROM users WHERE ativo = 1 AND role = 'vendedor' ORDER BY nome").fetchall()
+    return db.execute("SELECT id, nome, role FROM users WHERE ativo = 1 ORDER BY nome").fetchall()
+
+
+def _meta_filtro_vendas(m):
+    alvo = m["alvo_vendas"] or "qualquer"
+    if alvo == "padrao":
+        return " AND categoria = 'padrao'", []
+    if alvo == "software_qualquer":
+        return " AND categoria = 'software'", []
+    if alvo in ("revele_momentos", "revele_momentos_frontier"):
+        return " AND categoria = 'software' AND produto_software = ?", [alvo]
+    return "", []
+
+
+def _meta_progresso_map(db, m):
+    """{user_id: quantidade apurada} dentro da janela."""
+    ini, fim = _meta_janela(m)
+    if m["tipo"] == "vendas":
+        extra, extra_params = _meta_filtro_vendas(m)
+        rows = db.execute(f"""
+            SELECT user_id, COUNT(*) qtd FROM deals
+            WHERE status = 'ganho' AND etapa_atualizada_em BETWEEN ? AND ?{extra}
+            GROUP BY user_id
+        """, [ini, fim] + extra_params).fetchall()
+    else:
+        rows = db.execute("""
+            SELECT user_id, COALESCE(SUM(quantidade), 0) qtd FROM meta_progresso
+            WHERE meta_id = ? AND created_at BETWEEN ? AND ?
+            GROUP BY user_id
+        """, (m["id"], ini, fim)).fetchall()
+    return {r["user_id"]: r["qtd"] for r in rows}
+
+
+def _metas_do_usuario(db, uid, role):
+    """Metas ATIVAS (status + período vigente) aplicáveis ao usuário."""
+    hoje = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    out = []
+    for m in db.execute("SELECT * FROM metas WHERE status = 'ativa'").fetchall():
+        if m["periodo_tipo"] == "periodo":
+            if m["data_inicio"] and hoje < m["data_inicio"]:
+                continue
+            if m["data_fim"] and hoje > m["data_fim"]:
+                continue
+        if m["escopo"] == "individual" and m["escopo_user_id"] != uid:
+            continue
+        if m["escopo"] == "vendedores" and role != "vendedor":
+            continue
+        out.append(m)
+    return out
+
+
+@app.get("/api/metas")
+@login_required
+def list_metas():
+    db = get_db()
+    uid = g.current_user["id"]
+    if g.current_user["role"] == "admin":
+        metas = db.execute("""
+            SELECT m.*, cu.nome as criado_por_nome, eu.nome as escopo_user_nome,
+                   ex.nome as excluida_por_nome
+            FROM metas m
+            LEFT JOIN users cu ON cu.id = m.criado_por
+            LEFT JOIN users eu ON eu.id = m.escopo_user_id
+            LEFT JOIN users ex ON ex.id = m.excluida_por
+            ORDER BY m.created_at DESC
+        """).fetchall()
+        saida = []
+        for m in metas:
+            prog = _meta_progresso_map(db, m)
+            parts = _meta_participantes(db, m)
+            participantes = [{"user_id": p["id"], "nome": p["nome"], "role": p["role"],
+                              "progresso": prog.get(p["id"], 0),
+                              "atingida": prog.get(p["id"], 0) >= m["quantidade"]}
+                             for p in parts]
+            total = sum(p["progresso"] for p in participantes)
+            registros = []
+            if m["tipo"] == "manual":
+                registros = [dict(r) for r in db.execute("""
+                    SELECT mp.*, u.nome as autor_nome FROM meta_progresso mp
+                    LEFT JOIN users u ON u.id = mp.user_id
+                    WHERE mp.meta_id = ? ORDER BY mp.created_at DESC LIMIT 100
+                """, (m["id"],)).fetchall()]
+            saida.append({**dict(m), "situacao": _meta_situacao(m),
+                          "participantes": participantes, "progresso_total": total,
+                          "atingida_coletiva": total >= m["quantidade"],
+                          "registros": registros})
+        return jsonify({"admin": True, "metas": saida})
+
+    saida = []
+    for m in _metas_do_usuario(db, uid, g.current_user["role"]):
+        prog = _meta_progresso_map(db, m)
+        parts_ids = [p["id"] for p in _meta_participantes(db, m)]
+        meu = prog.get(uid, 0)
+        total = sum(q for u, q in prog.items() if u in parts_ids)
+        registros = []
+        if m["tipo"] == "manual":
+            registros = [dict(r) for r in db.execute("""
+                SELECT mp.* FROM meta_progresso mp
+                WHERE mp.meta_id = ? AND mp.user_id = ?
+                ORDER BY mp.created_at DESC LIMIT 50
+            """, (m["id"], uid)).fetchall()]
+        saida.append({"id": m["id"], "titulo": m["titulo"], "descricao": m["descricao"],
+                      "tipo": m["tipo"], "alvo_vendas": m["alvo_vendas"],
+                      "quantidade": m["quantidade"], "apuracao": m["apuracao"],
+                      "periodo_tipo": m["periodo_tipo"], "data_inicio": m["data_inicio"],
+                      "data_fim": m["data_fim"], "meu_progresso": meu,
+                      "progresso_total": total,
+                      "atingida": (total if m["apuracao"] == "coletiva" else meu) >= m["quantidade"],
+                      "registros": registros})
+    return jsonify({"admin": False, "metas": saida})
+
+
+@app.post("/api/metas")
+@login_required
+def create_meta():
+    if g.current_user["role"] != "admin":
+        return jsonify({"error": "Apenas administradores criam metas."}), 403
+    body = request.get_json(force=True, silent=True) or {}
+    titulo = (body.get("titulo") or "").strip()
+    if not titulo:
+        return jsonify({"error": "Dê um título à meta."}), 400
+    tipo = body.get("tipo") or "vendas"
+    if tipo not in ("vendas", "manual"):
+        return jsonify({"error": "Tipo de meta inválido."}), 400
+    alvo_vendas = None
+    if tipo == "vendas":
+        alvo_vendas = body.get("alvo_vendas") or "qualquer"
+        if alvo_vendas not in ALVOS_VENDA_META:
+            return jsonify({"error": "Escolha o que conta como venda para esta meta."}), 400
+    quantidade = _int_or_none(body.get("quantidade"))
+    if not quantidade:
+        return jsonify({"error": "Informe a quantidade alvo (número maior que zero)."}), 400
+    apuracao = body.get("apuracao") or "individual"
+    if apuracao not in ("individual", "coletiva"):
+        return jsonify({"error": "Apuração inválida."}), 400
+    escopo = body.get("escopo") or "todos"
+    if escopo not in ("todos", "vendedores", "individual"):
+        return jsonify({"error": "Escopo inválido."}), 400
+    db = get_db()
+    escopo_user_id = None
+    if escopo == "individual":
+        escopo_user_id = body.get("escopo_user_id")
+        u = db.execute("SELECT id FROM users WHERE id = ? AND ativo = 1", (escopo_user_id,)).fetchone()
+        if not u:
+            return jsonify({"error": "Para meta individual, escolha o usuário no campo correspondente."}), 400
+    periodo_tipo = body.get("periodo_tipo") or "mensal"
+    if periodo_tipo not in ("mensal", "periodo", "sem_fim"):
+        return jsonify({"error": "Período inválido."}), 400
+    data_inicio = data_fim = None
+    if periodo_tipo == "periodo":
+        data_inicio = (body.get("data_inicio") or "").strip() or None
+        data_fim = (body.get("data_fim") or "").strip() or None
+        if not data_inicio or not data_fim or data_fim < data_inicio:
+            return jsonify({"error": "Período definido exige data de início e de fim (fim após o início)."}), 400
+    mid = new_id()
+    db.execute("""
+        INSERT INTO metas (id, titulo, descricao, tipo, alvo_vendas, quantidade, apuracao,
+                           escopo, escopo_user_id, periodo_tipo, data_inicio, data_fim,
+                           criado_por, created_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    """, (mid, titulo, (body.get("descricao") or "").strip() or None, tipo, alvo_vendas,
+          quantidade, apuracao, escopo, escopo_user_id, periodo_tipo, data_inicio, data_fim,
+          g.current_user["id"], now_iso()))
+    audit("create", "metas", mid, {"titulo": titulo, "escopo": escopo, "apuracao": apuracao,
+                                   "periodo": periodo_tipo})
+    db.commit()
+    return jsonify({"id": mid}), 201
+
+
+@app.delete("/api/metas/<meta_id>")
+@login_required
+def delete_meta(meta_id):
+    if g.current_user["role"] != "admin":
+        return jsonify({"error": "Apenas administradores excluem metas."}), 403
+    db = get_db()
+    m = db.execute("SELECT * FROM metas WHERE id = ?", (meta_id,)).fetchone()
+    if not m:
+        return jsonify({"error": "Meta não encontrada."}), 404
+    if m["status"] == "excluida":
+        return jsonify({"error": "Esta meta já foi excluída."}), 400
+    # exclusão LÓGICA: sai dos alertas/cobrança, permanece na lista histórica
+    db.execute("UPDATE metas SET status = 'excluida', excluida_por = ?, excluida_em = ? WHERE id = ?",
+               (g.current_user["id"], now_iso(), meta_id))
+    audit("delete", "metas", meta_id, {"titulo": m["titulo"]})
+    db.commit()
+    return jsonify({"ok": True})
+
+
+@app.post("/api/metas/<meta_id>/progresso")
+@login_required
+def add_meta_progresso(meta_id):
+    db = get_db()
+    m = db.execute("SELECT * FROM metas WHERE id = ?", (meta_id,)).fetchone()
+    if not m:
+        return jsonify({"error": "Meta não encontrada."}), 404
+    if m["tipo"] != "manual":
+        return jsonify({"error": "Esta meta é automática: o progresso conta sozinho a cada venda ganha."}), 400
+    if _meta_situacao(m) != "ativa":
+        return jsonify({"error": "Esta meta não está mais ativa."}), 400
+    if g.current_user["id"] not in [p["id"] for p in _meta_participantes(db, m)]:
+        return jsonify({"error": "Esta meta não se aplica a você."}), 403
+    body = request.get_json(force=True, silent=True) or {}
+    nota = (body.get("nota") or "").strip() or None
+    if nota and len(nota) > 1000:
+        return jsonify({"error": "A nota é longa demais (máximo de 1.000 caracteres)."}), 400
+    pid = new_id()
+    db.execute("""
+        INSERT INTO meta_progresso (id, meta_id, user_id, quantidade, nota, created_at)
+        VALUES (?,?,?,1,?,?)
+    """, (pid, meta_id, g.current_user["id"], nota, now_iso()))
+    audit("create", "meta_progresso", pid, {"meta_id": meta_id})
+    db.commit()
+    return jsonify({"id": pid}), 201
 
 
 # ------------------------------------------------------------------
@@ -2326,6 +2591,20 @@ def init_db_if_needed():
     if not already_seeded:
         fresh = True
         seed(conn)
+    # 🎯 Bootstrap único: se NUNCA existiu meta alguma (nem excluída), cria a
+    # meta padrão do software — a antiga meta fixa do código, agora editável
+    # e excluível pelo administrador na tela Metas.
+    tem_meta = conn.execute("SELECT COUNT(*) c FROM metas").fetchone()["c"] > 0
+    if not tem_meta:
+        admin = conn.execute("SELECT id FROM users WHERE role = 'admin' ORDER BY created_at LIMIT 1").fetchone()
+        if admin:
+            conn.execute("""
+                INSERT INTO metas (id, titulo, descricao, tipo, alvo_vendas, quantidade,
+                                   apuracao, escopo, periodo_tipo, criado_por)
+                VALUES (?,?,?,?,?,?,?,?,?,?)
+            """, (new_id(), "Vender 1 assinatura do software Revele Momentos",
+                  "Oferecer e vender o Revele Momentos ou o Revele Momentos Frontier aos clientes de impressoras ASK/Frontier.",
+                  "vendas", "software_qualquer", 1, "individual", "todos", "mensal", admin["id"]))
     conn.commit()
     conn.close()
     return fresh

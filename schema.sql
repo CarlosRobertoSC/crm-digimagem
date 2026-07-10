@@ -117,6 +117,39 @@ CREATE TABLE IF NOT EXISTS deal_value_history (
 );
 
 CREATE INDEX IF NOT EXISTS idx_deal_value_deal ON deal_value_history(deal_id);
+
+-- 🎯 Metas configuráveis pelo administrador
+CREATE TABLE IF NOT EXISTS metas (
+    id             TEXT PRIMARY KEY,
+    titulo         TEXT NOT NULL,
+    descricao      TEXT,
+    tipo           TEXT NOT NULL CHECK(tipo IN ('vendas','manual')),
+    alvo_vendas    TEXT,      -- p/ tipo vendas: qualquer|padrao|software_qualquer|revele_momentos|revele_momentos_frontier
+    quantidade     INTEGER NOT NULL,
+    apuracao       TEXT NOT NULL CHECK(apuracao IN ('individual','coletiva')) DEFAULT 'individual',
+    escopo         TEXT NOT NULL CHECK(escopo IN ('todos','vendedores','individual')),
+    escopo_user_id TEXT REFERENCES users(id),
+    periodo_tipo   TEXT NOT NULL CHECK(periodo_tipo IN ('mensal','periodo','sem_fim')),
+    data_inicio    TEXT,
+    data_fim       TEXT,
+    status         TEXT NOT NULL CHECK(status IN ('ativa','excluida')) DEFAULT 'ativa',
+    criado_por     TEXT REFERENCES users(id),
+    created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+    excluida_por   TEXT,
+    excluida_em    TEXT
+);
+
+-- registros de progresso das metas MANUAIS (histórico de trabalho)
+CREATE TABLE IF NOT EXISTS meta_progresso (
+    id         TEXT PRIMARY KEY,
+    meta_id    TEXT NOT NULL REFERENCES metas(id) ON DELETE CASCADE,
+    user_id    TEXT NOT NULL REFERENCES users(id),
+    quantidade INTEGER NOT NULL DEFAULT 1,
+    nota       TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_meta_prog_meta ON meta_progresso(meta_id);
 CREATE INDEX IF NOT EXISTS idx_deal_notes_user ON deal_notes(user_id);
 CREATE INDEX IF NOT EXISTS idx_stage_history_data ON deal_stage_history(data_transicao);
 CREATE INDEX IF NOT EXISTS idx_stage_history_etapa_nova ON deal_stage_history(etapa_nova);

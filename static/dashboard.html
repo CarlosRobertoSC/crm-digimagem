@@ -261,6 +261,20 @@
   .phone-field select{max-width:118px;background:var(--surface-raised);border:1px solid var(--border);border-radius:8px;padding:9px 6px;color:var(--text-primary);font-size:12px;cursor:pointer;}
   .phone-field select:focus{outline:none;border-color:var(--signal);}
   .phone-field input{flex:1;min-width:0;}
+
+  /* ---------- METAS ---------- */
+  .meta-card{background:var(--surface-raised);border:1px solid var(--border);border-radius:12px;padding:14px 16px;margin-bottom:12px;}
+  .meta-card.atingida{border-color:#1fbf63;}
+  .meta-top{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:baseline;}
+  .meta-titulo{font-weight:600;font-size:13.5px;}
+  .meta-tags{display:flex;gap:6px;flex-wrap:wrap;}
+  .meta-tag{font-size:9.5px;font-family:var(--font-mono);text-transform:uppercase;color:var(--text-muted);border:1px solid var(--border);border-radius:20px;padding:2px 8px;}
+  .meta-desc{font-size:12px;color:var(--text-muted);margin-top:5px;line-height:1.55;}
+  .meta-barra{height:8px;background:var(--surface);border:1px solid var(--border);border-radius:20px;overflow:hidden;margin-top:10px;}
+  .meta-barra > div{height:100%;background:var(--signal);transition:width .3s;}
+  .meta-card.atingida .meta-barra > div{background:#1fbf63;}
+  .meta-prog-label{display:flex;justify-content:space-between;font-size:11px;font-family:var(--font-mono);color:var(--text-muted);margin-top:5px;}
+  .meta-registros{margin-top:10px;border-top:1px dashed var(--border);padding-top:8px;font-size:11.5px;color:var(--text-muted);line-height:1.6;}
   .modal-actions{display:flex;gap:8px;margin-top:16px;flex-shrink:0;}
   .modal-actions .btn-primary{flex:1;justify-content:center;}
   .modal-cancel{
@@ -513,6 +527,7 @@
       <div class="rail-btn" title="Clientes" id="navClientes" onclick="showView('clientes')"><span class="rail-icon">◍</span><span class="rail-label">Clientes</span></div>
       <div class="rail-btn" title="Tarefas" id="navTarefas" onclick="showView('tarefas')"><span class="rail-icon">☑</span><span class="rail-label">Tarefas</span></div>
       <div class="rail-btn" title="Tarefas da Equipe" id="navDelegadas" onclick="showView('delegadas')"><span class="rail-icon">▣</span><span class="rail-label">Tarefas da Equipe</span></div>
+      <div class="rail-btn" title="Metas" id="navMetas" onclick="showView('metas')"><span class="rail-icon">◎</span><span class="rail-label">Metas</span></div>
       <div class="rail-btn" title="Relatórios" id="navRelatorios" onclick="showView('relatorios')"><span class="rail-icon">▦</span><span class="rail-label">Relatórios</span></div>
       <div class="rail-btn" title="Notificações WhatsApp" id="navWhatsapp" onclick="showView('whatsapp')"><span class="rail-icon">◉</span><span class="rail-label">WhatsApp</span></div>
       <div class="rail-btn" title="Equipe" id="navEquipe" onclick="showView('equipe')" style="display:none;"><span class="rail-icon">◫</span><span class="rail-label">Equipe</span></div>
@@ -707,6 +722,24 @@
     </div>
 
     <!-- ========== VIEW: TAREFAS DELEGADAS (admin atribui, vendedor conduz) ========== -->
+    <!-- ========== VIEW: METAS ========== -->
+    <div id="metasView">
+      <div class="panel" id="metasAdminPanel" style="display:none;margin-bottom:22px;">
+        <div class="panel-head">
+          <div class="panel-title">◎ Gestão de Metas <span style="font-size:11px;color:var(--text-muted);font-family:var(--font-mono);font-weight:400;">administrador</span></div>
+          <button class="btn-primary" onclick="openModal('meta')">+ Nova meta</button>
+        </div>
+        <div id="metasAdminLista"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head">
+          <div class="panel-title">🎯 Minhas Metas</div>
+          <div class="panel-sub" id="minhasMetasSub">—</div>
+        </div>
+        <div id="minhasMetasLista"></div>
+      </div>
+    </div>
+
     <div id="delegadasView">
       <div class="panel">
         <div class="panel-head">
@@ -914,20 +947,20 @@ async function enterApp() {
   await refreshAll();
 }
 
-const VIEW_IDS = ["dashboard", "negocios", "assistente", "clientes", "tarefas", "delegadas", "relatorios", "whatsapp", "equipe"];
+const VIEW_IDS = ["dashboard", "negocios", "assistente", "clientes", "tarefas", "delegadas", "metas", "relatorios", "whatsapp", "equipe"];
 const VIEW_TITLES = {
   dashboard: "Painel de Triagem", negocios: "Negócios", assistente: "Assistente de Vendas",
-  clientes: "Clientes", tarefas: "Tarefas", delegadas: "Tarefas da Equipe", relatorios: "Relatórios",
+  clientes: "Clientes", tarefas: "Tarefas", delegadas: "Tarefas da Equipe", metas: "Metas", relatorios: "Relatórios",
   whatsapp: "Notificações WhatsApp", equipe: "Equipe",
 };
 const VIEW_LOADERS = {
   negocios: loadNegociosView, assistente: loadAssistenteView, clientes: loadClientesView,
-  tarefas: loadTarefasView, delegadas: loadDelegadasView, relatorios: loadRelatoriosView,
+  tarefas: loadTarefasView, delegadas: loadDelegadasView, metas: loadMetasView, relatorios: loadRelatoriosView,
   whatsapp: loadWhatsappView, equipe: loadEquipeView,
 };
 const VIEW_NAV_BTN = {
   dashboard: "navAlertas", negocios: "navNegocios", assistente: "navAssistente",
-  clientes: "navClientes", tarefas: "navTarefas", delegadas: "navDelegadas", relatorios: "navRelatorios",
+  clientes: "navClientes", tarefas: "navTarefas", delegadas: "navDelegadas", metas: "navMetas", relatorios: "navRelatorios",
   whatsapp: "navWhatsapp", equipe: "navEquipe",
 };
 
@@ -1009,15 +1042,18 @@ function renderLembretes(feed, data) {
       onClick: () => showView("delegadas"),
     });
   });
-  if (data.meta_software && data.meta_software.ofertas_mes === 0) {
+  (data.metas || []).forEach(m => {
+    const prazo = m.periodo_tipo === "periodo" && m.data_fim
+      ? ` · até ${m.data_fim.split("-").reverse().slice(0, 2).join("/")}`
+      : (m.periodo_tipo === "mensal" ? " · este mês" : "");
     itens.push({
-      hora: "🎞 meta",
+      hora: "🎯 meta",
       vencida: false,
-      desc: `Ofereça o software Revele Momentos aos clientes de impressoras ASK/Frontier <span class="lembrete-origem">· nenhuma oferta este mês${data.meta_software.clientes_sem_oferta ? ` · ${data.meta_software.clientes_sem_oferta} cliente(s) com impressora sem oferta` : ""}</span>`,
-      onClick: () => showView("clientes"),
+      desc: `${esc(m.titulo)} <span class="lembrete-origem">· ${m.apuracao === "coletiva" ? "grupo" : "você"}: ${m.progresso}/${m.quantidade}${prazo}${m.clientes_sem_oferta ? ` · ${m.clientes_sem_oferta} cliente(s) com impressora sem oferta` : ""}</span>`,
+      onClick: () => showView("metas"),
     });
-  }
-  if (!itens.length) return;
+  });
+  if (!itens.length) return 0;
   const box = document.createElement("div");
   box.className = "lembretes-box";
   box.innerHTML = `<div class="lembretes-title">📌 Suas tarefas — hoje e amanhã</div>`;
@@ -1029,6 +1065,7 @@ function renderLembretes(feed, data) {
     box.appendChild(row);
   });
   feed.appendChild(box);
+  return itens.length;
 }
 
 async function loadAlerts() {
@@ -1039,9 +1076,8 @@ async function loadAlerts() {
     api("/insights" + scopeQuery()),
     api("/lembretes"),
   ]);
-  const qtdLembretes = lembretes.compromissos.length + lembretes.delegadas.length;
+  const qtdLembretes = renderLembretes(feed, lembretes); // inclui compromissos, delegadas E metas
   sub.textContent = alerts.length + " alerta(s) ativo(s)" + (qtdLembretes ? ` · ${qtdLembretes} tarefa(s) sua(s)` : "");
-  renderLembretes(feed, lembretes);
   if (alerts.length === 0) {
     if (!qtdLembretes) feed.innerHTML = `<div class="empty-state">Nenhum alerta ativo agora. Tudo em dia ✓</div>`;
     return;
@@ -1797,7 +1833,7 @@ async function renderReportSoftware(content, periodo) {
       : `<span class="pill">${esc(ETAPA_LABEL[n.etapa_funil] || n.etapa_funil)}</span>`);
   content.innerHTML = `
     <div class="panel-head"><div class="panel-title">🎞 Software Revele Momentos</div>
-      <span style="font-size:11px;color:var(--text-muted);font-family:var(--font-mono);">meta: ${data.meta_por_usuario} venda(s) por pessoa no período</span>
+      <span style="font-size:11px;color:var(--text-muted);font-family:var(--font-mono);">🎯 as metas do software agora são configuráveis na tela Metas</span>
     </div>
     <div style="display:flex;gap:18px;flex-wrap:wrap;margin-bottom:16px;font-size:12.5px;">
       <span>Ofertas: <b>${t.ofertas}</b></span>
@@ -1806,14 +1842,13 @@ async function renderReportSoftware(content, periodo) {
       <span>Em negociação: <b>${t.abertas}</b></span>
       <span>Valor vendido: <b>${fmt(t.valor_ganho)}</b></span>
     </div>
-    <div class="tarefas-section-title">Meta por usuário</div>
+    <div class="tarefas-section-title">Desempenho por usuário</div>
     <table class="report-table" style="margin-bottom:18px;">
-      <thead><tr><th>Usuário</th><th>Ofertas</th><th>Vendidas</th><th>Perdidas</th><th>Valor vendido</th><th>Meta</th></tr></thead>
+      <thead><tr><th>Usuário</th><th>Ofertas</th><th>Vendidas</th><th>Perdidas</th><th>Valor vendido</th></tr></thead>
       <tbody>${data.usuarios.map(u => `
         <tr>
           <td>${esc(u.nome)}${u.role === "admin" ? ` <span class="vendor-badge">admin</span>` : ""}</td>
           <td>${u.ofertas}</td><td>${u.ganhas}</td><td>${u.perdidas}</td><td>${fmt(u.valor_ganho)}</td>
-          <td>${u.meta_ok ? `<span class="pill ganho">✓ atingida</span>` : `<span class="pill perdido">✗ pendente</span>`}</td>
         </tr>`).join("")}</tbody>
     </table>
     <div class="tarefas-section-title">Negociações do software no período</div>
@@ -2089,6 +2124,129 @@ async function loadDelegadasView() {
       openModal("concluir_delegada");
     });
   });
+}
+
+// ------------------------------------------------------------------
+// 🎯 METAS — tela, cards e gestão do administrador
+// ------------------------------------------------------------------
+let SELECTED_META_ID = null;
+
+function prazoMetaLabel(m) {
+  if (m.periodo_tipo === "mensal") return "mensal · zera todo mês";
+  if (m.periodo_tipo === "sem_fim") return "sem prazo";
+  const f = s => s ? s.split("-").reverse().join("/") : "?";
+  return `${f(m.data_inicio)} → ${f(m.data_fim)}`;
+}
+
+function alvoVendaLabel(a) {
+  return ({
+    qualquer: "de qualquer tipo", padrao: "de venda padrão (impressoras/insumos)",
+    software_qualquer: "🎞 do software (Revele Momentos ou Frontier)",
+    revele_momentos: "🎞 do Revele Momentos", revele_momentos_frontier: "🎞 do Revele Momentos Frontier",
+  })[a] || "";
+}
+
+function metaCardHtml(m) {
+  const efetivo = m.apuracao === "coletiva" ? (m.progresso_total || 0) : (m.meu_progresso || 0);
+  const pct = Math.min(100, Math.round(efetivo / m.quantidade * 100));
+  const regs = m.registros || [];
+  return `
+    <div class="meta-card ${m.atingida ? "atingida" : ""}">
+      <div class="meta-top">
+        <span class="meta-titulo">${m.atingida ? "✓" : "🎯"} ${esc(m.titulo)}</span>
+        <span class="meta-tags">
+          <span class="meta-tag">${m.tipo === "vendas" ? "vendas · automática" : "manual"}</span>
+          <span class="meta-tag">${m.apuracao === "coletiva" ? "meta do grupo" : "por pessoa"}</span>
+          <span class="meta-tag">${esc(prazoMetaLabel(m))}</span>
+        </span>
+      </div>
+      ${m.descricao ? `<div class="meta-desc">${esc(m.descricao)}</div>` : ""}
+      <div class="meta-barra"><div style="width:${pct}%"></div></div>
+      <div class="meta-prog-label">
+        <span>${m.apuracao === "coletiva" ? `grupo: ${efetivo}/${m.quantidade} · sua parte: ${m.meu_progresso || 0}` : `você: ${efetivo}/${m.quantidade}`}</span>
+        <span>${m.atingida ? "meta atingida ✓" : pct + "%"}</span>
+      </div>
+      ${!m.atingida && m.tipo === "manual" ? `<div style="margin-top:10px;"><button class="btn-mini" onclick="registrarProgressoMeta('${esc(m.id)}')">+1 Registrar progresso</button></div>` : ""}
+      ${!m.atingida && m.tipo === "vendas" ? `<div class="meta-desc" style="font-size:11px;">Como cumprir: feche negócios ${alvoVendaLabel(m.alvo_vendas)} — o progresso conta sozinho a cada venda GANHA.</div>` : ""}
+      ${regs.length ? `<div class="meta-registros"><b style="font-size:10px;text-transform:uppercase;">Seu histórico nesta meta</b>${regs.slice(0, 8).map(r => `<div>· ${fmtDataHist(r.created_at)}${r.nota ? " — " + esc(r.nota) : ""}</div>`).join("")}</div>` : ""}
+    </div>`;
+}
+
+async function loadMetasView() {
+  const data = await api("/metas");
+  const adminPanel = document.getElementById("metasAdminPanel");
+  adminPanel.style.display = data.admin ? "block" : "none";
+  let minhas;
+  if (data.admin) {
+    renderMetasAdmin(data.metas);
+    // o admin também é cobrado: monta a visão "minhas metas" dele
+    minhas = data.metas
+      .filter(m => m.situacao === "ativa" && m.escopo !== "vendedores")
+      .filter(m => m.escopo !== "individual" || m.escopo_user_id === CURRENT_USER.id)
+      .map(m => {
+        const eu = (m.participantes || []).find(p => p.user_id === CURRENT_USER.id) || { progresso: 0 };
+        return { ...m, meu_progresso: eu.progresso,
+                 atingida: m.apuracao === "coletiva" ? m.atingida_coletiva : eu.progresso >= m.quantidade,
+                 registros: (m.registros || []).filter(r => r.user_id === CURRENT_USER.id) };
+      });
+  } else {
+    minhas = data.metas;
+  }
+  document.getElementById("minhasMetasSub").textContent =
+    `${minhas.length} meta(s) ativa(s) para você · ${minhas.filter(m => m.atingida).length} atingida(s)`;
+  document.getElementById("minhasMetasLista").innerHTML = minhas.length
+    ? minhas.map(metaCardHtml).join("")
+    : `<div class="empty-state">Nenhuma meta ativa para você no momento.</div>`;
+}
+
+function renderMetasAdmin(metas) {
+  const box = document.getElementById("metasAdminLista");
+  if (!metas.length) {
+    box.innerHTML = `<div class="empty-state">Nenhuma meta criada ainda. Use "+ Nova meta".</div>`;
+    return;
+  }
+  box.innerHTML = metas.map(m => {
+    const sit = m.situacao === "ativa" ? `<span class="pill ganho">ativa</span>`
+      : (m.situacao === "encerrada" ? `<span class="pill">encerrada</span>` : `<span class="pill perdido">excluída</span>`);
+    const escopoLabel = m.escopo === "todos" ? "👥 toda a equipe (com admins)"
+      : (m.escopo === "vendedores" ? "👥 equipe de vendedores" : `👤 individual: ${esc(m.escopo_user_nome || "?")}`);
+    return `
+    <div class="meta-card">
+      <div class="meta-top">
+        <span class="meta-titulo">${esc(m.titulo)} ${sit}</span>
+        ${m.situacao !== "excluida" ? `<button class="btn-mini" style="border-color:var(--urgent);color:var(--urgent);" onclick="excluirMeta('${esc(m.id)}')">🗑 Excluir</button>` : ""}
+      </div>
+      <div class="meta-desc">${m.descricao ? esc(m.descricao) + " · " : ""}${m.tipo === "vendas" ? "automática — conta vendas ganhas " + alvoVendaLabel(m.alvo_vendas) : "manual — o usuário registra o progresso"} · alvo <b>${m.quantidade}</b> (${m.apuracao === "coletiva" ? "soma do grupo" : "por pessoa"}) · ${escopoLabel} · ${esc(prazoMetaLabel(m))}</div>
+      <div class="meta-desc" style="font-size:10.5px;">criada por <b>${esc(m.criado_por_nome || "?")}</b> em ${fmtDataHist(m.created_at)}${m.situacao === "excluida" && m.excluida_em ? ` · excluída por <b>${esc(m.excluida_por_nome || "?")}</b> em ${fmtDataHist(m.excluida_em)}` : ""}</div>
+      ${m.apuracao === "coletiva" ? `<div class="meta-barra"><div style="width:${Math.min(100, Math.round((m.progresso_total || 0) / m.quantidade * 100))}%"></div></div><div class="meta-prog-label"><span>grupo: ${m.progresso_total || 0}/${m.quantidade}</span><span>${m.atingida_coletiva ? "atingida ✓" : ""}</span></div>` : ""}
+      <table class="report-table" style="margin-top:10px;">
+        <thead><tr><th>Participante</th><th>Progresso</th><th>Situação</th></tr></thead>
+        <tbody>${(m.participantes || []).map(p => `
+          <tr>
+            <td>${esc(p.nome)}${p.role === "admin" ? ` <span class="vendor-badge">admin</span>` : ""}</td>
+            <td>${p.progresso}/${m.quantidade}</td>
+            <td>${p.atingida ? `<span class="pill ganho">✓ atingida</span>` : `<span class="pill perdido">pendente</span>`}</td>
+          </tr>`).join("")}</tbody>
+      </table>
+      ${m.tipo === "manual" && (m.registros || []).length ? `<div class="meta-registros"><b style="font-size:10px;text-transform:uppercase;">Registros de progresso</b>${m.registros.slice(0, 10).map(r => `<div>· ${fmtDataHist(r.created_at)} — <b>${esc(r.autor_nome || "?")}</b>${r.nota ? ": " + esc(r.nota) : ""}</div>`).join("")}</div>` : ""}
+    </div>`;
+  }).join("");
+}
+
+function registrarProgressoMeta(id) {
+  SELECTED_META_ID = id;
+  openModal("meta_progresso");
+}
+
+async function excluirMeta(id) {
+  if (!confirm("Excluir esta meta?\n\nEla sai dos alertas e da cobrança de todos, mas permanece na lista histórica marcada como excluída (com o registro de quem excluiu).")) return;
+  try {
+    await api(`/metas/${id}`, { method: "DELETE" });
+    loadMetasView();
+    refreshAll();
+  } catch (e) {
+    alert(e.message || "Erro ao excluir a meta.");
+  }
 }
 
 // ------------------------------------------------------------------
@@ -2545,11 +2703,65 @@ const MODAL_CONFIG = {
       refreshAll();
     },
   },
+  meta: {
+    title: "Nova meta",
+    fields: [
+      { name: "titulo", label: "Título da meta", type: "text", required: true },
+      { name: "descricao", label: "Descrição (opcional)", type: "text" },
+      { name: "tipo", label: "Tipo de meta", type: "select", options: [
+        ["vendas", "Automática — conta as vendas GANHAS sozinha"],
+        ["manual", "Manual — o usuário registra o progresso"],
+      ] },
+      { name: "alvo_vendas", label: "O que conta como venda (só p/ meta automática)", type: "select", options: [
+        ["qualquer", "Qualquer venda ganha"],
+        ["padrao", "Vendas padrão (impressoras/insumos)"],
+        ["software_qualquer", "🎞 Software — Revele Momentos OU Frontier"],
+        ["revele_momentos", "🎞 Só Revele Momentos"],
+        ["revele_momentos_frontier", "🎞 Só Revele Momentos Frontier"],
+      ] },
+      { name: "quantidade", label: "Quantidade alvo", type: "number", required: true },
+      { name: "apuracao", label: "Apuração", type: "select", options: [
+        ["individual", "Por pessoa — cada participante deve atingir o alvo"],
+        ["coletiva", "Do grupo — a soma de todos deve atingir o alvo"],
+      ] },
+      { name: "escopo", label: "Quem participa", type: "select", options: [
+        ["todos", "👥 Toda a equipe (inclui administradores)"],
+        ["vendedores", "👥 Equipe de vendedores"],
+        ["individual", "👤 Um usuário específico (escolha abaixo)"],
+      ] },
+      { name: "escopo_user_id", label: "Usuário da meta individual", type: "select", options: [["", "—"]] },
+      { name: "periodo_tipo", label: "Período", type: "select", options: [
+        ["mensal", "Mensal recorrente — zera todo mês, sem data para acabar"],
+        ["periodo", "Período definido — início e fim abaixo"],
+        ["sem_fim", "Sem expiração — acumulada até ser excluída"],
+      ] },
+      { name: "data_inicio", label: "Início (só p/ período definido)", type: "date" },
+      { name: "data_fim", label: "Fim (só p/ período definido)", type: "date" },
+    ],
+    submit: async (values) => api("/metas", { method: "POST", body: JSON.stringify(values) }),
+    onSuccess: async () => {
+      if (CURRENT_VIEW === "metas") loadMetasView();
+      refreshAll();
+    },
+  },
+  meta_progresso: {
+    title: "Registrar progresso na meta (+1)",
+    fields: [
+      { name: "nota", label: "O que você fez? (opcional — entra no histórico da meta)", type: "text" },
+    ],
+    submit: async (values) => api(`/metas/${SELECTED_META_ID}/progresso`, {
+      method: "POST", body: JSON.stringify(values),
+    }),
+    onSuccess: async () => {
+      loadMetasView();
+      refreshAll();
+    },
+  },
 };
 
 let ACTIVE_MODAL = null;
 
-const ADMIN_ONLY_MODALS = ["usuario", "editar_usuario", "delegada"];
+const ADMIN_ONLY_MODALS = ["usuario", "editar_usuario", "delegada", "meta"];
 
 // ------------------------------------------------------------------
 // Busca automática de CNPJ (Receita Federal via BrasilAPI) e CEP (ViaCEP)
@@ -2655,6 +2867,13 @@ async function openModal(kind) {
   const fieldsBox = document.getElementById("modalFields");
 
   let fields = cfg.fields;
+  if (kind === "meta") {
+    const usuarios = await api("/users");
+    fields = cfg.fields.map(f => f.name === "escopo_user_id"
+      ? { ...f, options: [["", "— só preencher se o escopo for individual —"],
+          ...usuarios.filter(u => u.ativo).map(u => [u.id, u.nome + (u.role === "admin" ? " (admin)" : "")])] }
+      : f);
+  }
   // compromisso sem cliente pré-selecionado (ex: view de Tarefas) ganha um seletor de cliente
   if (kind === "compromisso" && !SELECTED_CUSTOMER_ID) {
     const clientes = await api("/customers" + scopeQuery());
