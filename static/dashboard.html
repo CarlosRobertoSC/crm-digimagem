@@ -729,6 +729,14 @@
           <div class="panel-title">◎ Gestão de Metas <span style="font-size:11px;color:var(--text-muted);font-family:var(--font-mono);font-weight:400;">administrador</span></div>
           <button class="btn-primary" onclick="openModal('meta')">+ Nova meta</button>
         </div>
+        <div class="tarefas-section-title">📦 Catálogo de produtos <span style="font-weight:400;text-transform:none;letter-spacing:0;">— cadastre aqui os produtos que entram em metas e no "Tipo de negócio" dos vendedores</span></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:6px 0 8px;">
+          <input id="novoProdutoNome" placeholder="Nome do produto — ex.: Impressora ASK-400"
+            style="background:var(--surface-raised);border:1px solid var(--border);border-radius:8px;padding:8px 12px;color:var(--text-primary);font-size:12.5px;width:320px;max-width:100%;">
+          <button class="btn-mini" onclick="adicionarProduto()">+ Adicionar</button>
+        </div>
+        <div id="produtosLista" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px;"></div>
+        <div class="tarefas-section-title">Metas criadas</div>
         <div id="metasAdminLista"></div>
       </div>
       <div class="panel">
@@ -2130,6 +2138,45 @@ async function loadDelegadasView() {
 // 🎯 METAS — tela, cards e gestão do administrador
 // ------------------------------------------------------------------
 let SELECTED_META_ID = null;
+let PRODUTOS_CACHE = [];
+
+async function carregarProdutos() {
+    PRODUTOS_CACHE = await api("/produtos");
+    return PRODUTOS_CACHE;
+}
+
+function renderProdutos() {
+  const box = document.getElementById("produtosLista");
+  if (!PRODUTOS_CACHE.length) {
+    box.innerHTML = `<span style="font-size:11.5px;color:var(--text-muted);">Nenhum produto cadastrado ainda.</span>`;
+    return;
+  }
+  box.innerHTML = PRODUTOS_CACHE.map(p => `
+    <span class="check-chip" style="${p.ativo ? "" : "opacity:.45;"}" title="criado por ${esc(p.criado_por_nome || "?")}">
+      📦 ${esc(p.nome)}
+      <button onclick="toggleProduto('${esc(p.id)}')" style="background:none;border:none;cursor:pointer;color:${p.ativo ? "var(--urgent)" : "#1fbf63"};font-size:10px;padding:0 0 0 4px;" title="${p.ativo ? "Desativar (some das opções; nada existente é afetado)" : "Reativar"}">${p.ativo ? "desativar" : "reativar"}</button>
+    </span>`).join("");
+}
+
+async function adicionarProduto() {
+  const input = document.getElementById("novoProdutoNome");
+  const nome = input.value.trim();
+  if (!nome) { alert("Digite o nome do produto."); return; }
+  try {
+    await api("/produtos", { method: "POST", body: JSON.stringify({ nome }) });
+    input.value = "";
+    await carregarProdutos();
+    renderProdutos();
+  } catch (e) { alert(e.message || "Erro ao cadastrar o produto."); }
+}
+
+async function toggleProduto(id) {
+  try {
+    await api(`/produtos/${id}/toggle`, { method: "POST" });
+    await carregarProdutos();
+    renderProdutos();
+  } catch (e) { alert(e.message || "Erro ao alterar o produto."); }
+}
 
 function prazoMetaLabel(m) {
   if (m.periodo_tipo === "mensal") return "mensal · zera todo mês";
@@ -2138,7 +2185,8 @@ function prazoMetaLabel(m) {
   return `${f(m.data_inicio)} → ${f(m.data_fim)}`;
 }
 
-function alvoVendaLabel(a) {
+function alvoVendaLabel(a, nomeProduto) {
+  if (a === "produto") return `📦 do produto "${nomeProduto || "?"}"`;
   return ({
     qualquer: "de qualquer tipo", padrao: "de venda padrão (impressoras/insumos)",
     software_qualquer: "🎞 do software (Revele Momentos ou Frontier)",
@@ -2164,10 +2212,10 @@ function metaCardHtml(m) {
       <div class="meta-barra"><div style="width:${pct}%"></div></div>
       <div class="meta-prog-label">
         <span>${m.apuracao === "coletiva" ? `grupo: ${efetivo}/${m.quantidade} · sua parte: ${m.meu_progresso || 0}` : `você: ${efetivo}/${m.quantidade}`}</span>
-        <span>${m.atingida ? "meta atingida ✓" : pct + "%"}</span>
+        <span>${m.atingida ? "meta atingida ✓" : `faltam ${m.quantidade - efetivo} · ${pct}%`}</span>
       </div>
       ${!m.atingida && m.tipo === "manual" ? `<div style="margin-top:10px;"><button class="btn-mini" onclick="registrarProgressoMeta('${esc(m.id)}')">+1 Registrar progresso</button></div>` : ""}
-      ${!m.atingida && m.tipo === "vendas" ? `<div class="meta-desc" style="font-size:11px;">Como cumprir: feche negócios ${alvoVendaLabel(m.alvo_vendas)} — o progresso conta sozinho a cada venda GANHA.</div>` : ""}
+      ${!m.atingida && m.tipo === "vendas" ? `<div class="meta-desc" style="font-size:11px;">Como cumprir: feche negócios ${alvoVendaLabel(m.alvo_vendas, m.alvo_produto_nome)} — o progresso conta sozinho a cada venda GANHA.${m.alvo_vendas === "produto" ? ` Ao abrir o negócio, escolha "📦 ${esc(m.alvo_produto_nome || "")}" no Tipo de negócio.` : ""}</div>` : ""}
       ${regs.length ? `<div class="meta-registros"><b style="font-size:10px;text-transform:uppercase;">Seu histórico nesta meta</b>${regs.slice(0, 8).map(r => `<div>· ${fmtDataHist(r.created_at)}${r.nota ? " — " + esc(r.nota) : ""}</div>`).join("")}</div>` : ""}
     </div>`;
 }
@@ -2176,6 +2224,7 @@ async function loadMetasView() {
   const data = await api("/metas");
   const adminPanel = document.getElementById("metasAdminPanel");
   adminPanel.style.display = data.admin ? "block" : "none";
+  if (data.admin) { await carregarProdutos(); renderProdutos(); }
   let minhas;
   if (data.admin) {
     renderMetasAdmin(data.metas);
@@ -2216,7 +2265,7 @@ function renderMetasAdmin(metas) {
         <span class="meta-titulo">${esc(m.titulo)} ${sit}</span>
         ${m.situacao !== "excluida" ? `<button class="btn-mini" style="border-color:var(--urgent);color:var(--urgent);" onclick="excluirMeta('${esc(m.id)}')">🗑 Excluir</button>` : ""}
       </div>
-      <div class="meta-desc">${m.descricao ? esc(m.descricao) + " · " : ""}${m.tipo === "vendas" ? "automática — conta vendas ganhas " + alvoVendaLabel(m.alvo_vendas) : "manual — o usuário registra o progresso"} · alvo <b>${m.quantidade}</b> (${m.apuracao === "coletiva" ? "soma do grupo" : "por pessoa"}) · ${escopoLabel} · ${esc(prazoMetaLabel(m))}</div>
+      <div class="meta-desc">${m.descricao ? esc(m.descricao) + " · " : ""}${m.tipo === "vendas" ? "automática — conta vendas ganhas " + alvoVendaLabel(m.alvo_vendas, m.alvo_produto_nome) : "manual — o usuário registra o progresso"} · alvo <b>${m.quantidade}</b> (${m.apuracao === "coletiva" ? "soma do grupo" : "por pessoa"}) · ${escopoLabel} · ${esc(prazoMetaLabel(m))}</div>
       <div class="meta-desc" style="font-size:10.5px;">criada por <b>${esc(m.criado_por_nome || "?")}</b> em ${fmtDataHist(m.created_at)}${m.situacao === "excluida" && m.excluida_em ? ` · excluída por <b>${esc(m.excluida_por_nome || "?")}</b> em ${fmtDataHist(m.excluida_em)}` : ""}</div>
       ${m.apuracao === "coletiva" ? `<div class="meta-barra"><div style="width:${Math.min(100, Math.round((m.progresso_total || 0) / m.quantidade * 100))}%"></div></div><div class="meta-prog-label"><span>grupo: ${m.progresso_total || 0}/${m.quantidade}</span><span>${m.atingida_coletiva ? "atingida ✓" : ""}</span></div>` : ""}
       <table class="report-table" style="margin-top:10px;">
@@ -2339,7 +2388,8 @@ async function renderHistorico() {
   document.getElementById("histSub").innerHTML =
     `${esc(d.cliente_nome)} · vendedor: <b>${esc(d.vendedor_nome || "—")}</b>` +
     ` · R$ ${Number(d.valor_estimado).toLocaleString("pt-BR")}` +
-    (d.cliente_rolos_mes ? ` · 📦 ~${esc(d.cliente_rolos_mes)} rolos/mês` : "") +
+    (d.produto_nome ? ` · 📦 ${esc(d.produto_nome)}` : "") +
+    (d.cliente_rolos_mes ? ` · ~${esc(d.cliente_rolos_mes)} rolos/mês` : "") +
     ` · <span class="pill ${esc(d.status)}">${esc(ETAPA_LABEL[d.etapa_funil] || d.etapa_funil)}</span>`;
   const comoGestor = CURRENT_USER.role === "admin" && d.user_id && d.user_id !== CURRENT_USER.id;
   document.getElementById("histComposerHint").textContent =
@@ -2567,7 +2617,9 @@ const MODAL_CONFIG = {
     submit: async (values) => {
       values.customer_id = SELECTED_CUSTOMER_ID;
       values.valor_estimado = values.valor_estimado ? Number(values.valor_estimado) : 0;
-      if (values.tipo_negocio && values.tipo_negocio !== "padrao") {
+      if (values.tipo_negocio && values.tipo_negocio.startsWith("prod:")) {
+        values.produto_id = values.tipo_negocio.slice(5); // venda padrão + elo com o produto/meta
+      } else if (values.tipo_negocio && values.tipo_negocio !== "padrao") {
         values.categoria = "software";
         values.produto_software = values.tipo_negocio;
       }
@@ -2738,7 +2790,13 @@ const MODAL_CONFIG = {
       { name: "data_inicio", label: "Início (só p/ período definido)", type: "date" },
       { name: "data_fim", label: "Fim (só p/ período definido)", type: "date" },
     ],
-    submit: async (values) => api("/metas", { method: "POST", body: JSON.stringify(values) }),
+    submit: async (values) => {
+      if (values.alvo_vendas && values.alvo_vendas.startsWith("prod:")) {
+        values.alvo_produto_id = values.alvo_vendas.slice(5);
+        values.alvo_vendas = "produto";
+      }
+      return api("/metas", { method: "POST", body: JSON.stringify(values) });
+    },
     onSuccess: async () => {
       if (CURRENT_VIEW === "metas") loadMetasView();
       refreshAll();
@@ -2867,12 +2925,28 @@ async function openModal(kind) {
   const fieldsBox = document.getElementById("modalFields");
 
   let fields = cfg.fields;
+  if (kind === "negocio") {
+    // 📦 injeta os produtos ativos do catálogo no "Tipo de negócio"
+    await carregarProdutos();
+    const opsProdutos = PRODUTOS_CACHE.filter(p => p.ativo).map(p => [`prod:${p.id}`, `📦 ${p.nome}`]);
+    fields = cfg.fields.map(f => f.name === "tipo_negocio"
+      ? { ...f, options: [f.options[0], ...opsProdutos, ...f.options.slice(1)] }
+      : f);
+  }
   if (kind === "meta") {
     const usuarios = await api("/users");
-    fields = cfg.fields.map(f => f.name === "escopo_user_id"
-      ? { ...f, options: [["", "— só preencher se o escopo for individual —"],
-          ...usuarios.filter(u => u.ativo).map(u => [u.id, u.nome + (u.role === "admin" ? " (admin)" : "")])] }
-      : f);
+    await carregarProdutos();
+    const opsProdutos = PRODUTOS_CACHE.filter(p => p.ativo).map(p => [`prod:${p.id}`, `📦 Produto — ${p.nome}`]);
+    fields = cfg.fields.map(f => {
+      if (f.name === "escopo_user_id") {
+        return { ...f, options: [["", "— só preencher se o escopo for individual —"],
+          ...usuarios.filter(u => u.ativo).map(u => [u.id, u.nome + (u.role === "admin" ? " (admin)" : "")])] };
+      }
+      if (f.name === "alvo_vendas") {
+        return { ...f, options: [...f.options, ...opsProdutos] };
+      }
+      return f;
+    });
   }
   // compromisso sem cliente pré-selecionado (ex: view de Tarefas) ganha um seletor de cliente
   if (kind === "compromisso" && !SELECTED_CUSTOMER_ID) {

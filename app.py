@@ -1044,16 +1044,25 @@ def create_deal():
         produto_software = body.get("produto_software")
         if produto_software not in PRODUTOS_SOFTWARE:
             return jsonify({"error": "Escolha o produto: Revele Momentos ou Revele Momentos Frontier."}), 400
+    # 📦 produto do catálogo (opcional; só para vendas padrão): cria o elo
+    # estruturado com as metas por produto, sem tirar a venda dos relatórios.
+    produto_id = None
+    if categoria == "padrao" and body.get("produto_id"):
+        pr = db.execute("SELECT id FROM produtos WHERE id = ? AND ativo = 1",
+                        (body.get("produto_id"),)).fetchone()
+        if not pr:
+            return jsonify({"error": "Produto do catálogo inválido ou inativo."}), 400
+        produto_id = pr["id"]
 
     did = new_id()
     etapa_inicial = body.get("etapa_funil", "novo_lead")
     db.execute("""
         INSERT INTO deals (id, customer_id, user_id, titulo, etapa_funil, valor_estimado, status,
-                           data_prevista_fechamento, categoria, produto_software)
-        VALUES (?,?,?,?,?,?,'aberto',?,?,?)
+                           data_prevista_fechamento, categoria, produto_software, produto_id)
+        VALUES (?,?,?,?,?,?,'aberto',?,?,?,?)
     """, (did, body["customer_id"], user_id, body["titulo"],
           etapa_inicial, body.get("valor_estimado", 0), body.get("data_prevista_fechamento"),
-          categoria, produto_software))
+          categoria, produto_software, produto_id))
     # 💰 valor inicial entra no histórico (valor_anterior NULL = "inicial")
     db.execute("""
         INSERT INTO deal_value_history (id, deal_id, valor_anterior, valor_novo, user_id, created_at)
@@ -1225,10 +1234,11 @@ def _deal_permitido_ou_erro(deal_id):
     db = get_db()
     d = db.execute("""
         SELECT d.*, c.nome as cliente_nome, c.rolos_mes_media as cliente_rolos_mes,
-               u.nome as vendedor_nome
+               u.nome as vendedor_nome, pr.nome as produto_nome
         FROM deals d
         JOIN customers c ON c.id = d.customer_id
         LEFT JOIN users u ON u.id = d.user_id
+        LEFT JOIN produtos pr ON pr.id = d.produto_id
         WHERE d.id = ?
     """, (deal_id,)).fetchone()
     if not d:
@@ -1852,6 +1862,66 @@ def list_lembretes():
 
 
 # ------------------------------------------------------------------
+# 📦 CATÁLOGO DE PRODUTOS — o elo estruturado entre a venda e a meta.
+# Admin cadastra/desativa; produtos nunca são apagados (negócios e metas
+# antigos continuam apontando para eles). Todos leem o catálogo, pois o
+# vendedor o usa no "Tipo de negócio".
+# ------------------------------------------------------------------
+@app.get("/api/produtos")
+@login_required
+def list_produtos():
+    db = get_db()
+    rows = db.execute("""
+        SELECT p.*, u.nome as criado_por_nome FROM produtos p
+        LEFT JOIN users u ON u.id = p.criado_por
+        ORDER BY p.ativo DESC, p.nome
+    """).fetchall()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.post("/api/produtos")
+@login_required
+def create_produto():
+    if g.current_user["role"] != "admin":
+        return jsonify({"error": "Apenas administradores cadastram produtos."}), 403
+    body = request.get_json(force=True, silent=True) or {}
+    nome = (body.get("nome") or "").strip()
+    if not nome:
+        return jsonify({"error": "Informe o nome do produto."}), 400
+    if len(nome) > 120:
+        return jsonify({"error": "Nome do produto longo demais (máximo 120 caracteres)."}), 400
+    db = get_db()
+    duplicado = db.execute("SELECT id FROM produtos WHERE lower(nome) = lower(?)", (nome,)).fetchone()
+    if duplicado:
+        return jsonify({"error": "Já existe um produto com esse nome no catálogo."}), 400
+    pid = new_id()
+    db.execute("INSERT INTO produtos (id, nome, criado_por, created_at) VALUES (?,?,?,?)",
+               (pid, nome, g.current_user["id"], now_iso()))
+    audit("create", "produtos", pid, {"nome": nome})
+    db.commit()
+    return jsonify({"id": pid}), 201
+
+
+@app.post("/api/produtos/<produto_id>/toggle")
+@login_required
+def toggle_produto(produto_id):
+    """Ativa/desativa um produto do catálogo. Desativado some das opções de
+    novo negócio e de nova meta, mas negócios e metas existentes seguem
+    intactos (por isso não existe exclusão)."""
+    if g.current_user["role"] != "admin":
+        return jsonify({"error": "Apenas administradores alteram o catálogo."}), 403
+    db = get_db()
+    p = db.execute("SELECT * FROM produtos WHERE id = ?", (produto_id,)).fetchone()
+    if not p:
+        return jsonify({"error": "Produto não encontrado."}), 404
+    novo = 0 if p["ativo"] else 1
+    db.execute("UPDATE produtos SET ativo = ? WHERE id = ?", (novo, produto_id))
+    audit("update", "produtos", produto_id, {"ativo": bool(novo)})
+    db.commit()
+    return jsonify({"ok": True, "ativo": bool(novo)})
+
+
+# ------------------------------------------------------------------
 # 🎯 METAS configuráveis
 # - tipo 'vendas': o progresso conta SOZINHO pelos negócios GANHOS na janela
 #   de apuração (mês corrente / período definido / desde sempre).
@@ -1861,7 +1931,7 @@ def list_lembretes():
 # RBAC: admin cria/exclui e vê tudo; vendedor vê apenas as metas dele.
 # ------------------------------------------------------------------
 ALVOS_VENDA_META = ("qualquer", "padrao", "software_qualquer",
-                    "revele_momentos", "revele_momentos_frontier")
+                    "revele_momentos", "revele_momentos_frontier", "produto")
 
 
 def _meta_situacao(m):
@@ -1895,6 +1965,9 @@ def _meta_participantes(db, m):
 
 def _meta_filtro_vendas(m):
     alvo = m["alvo_vendas"] or "qualquer"
+    if alvo == "produto":
+        # só o produto específico do catálogo pontua nesta meta
+        return " AND produto_id = ?", [m["alvo_produto_id"]]
     if alvo == "padrao":
         return " AND categoria = 'padrao'", []
     if alvo == "software_qualquer":
@@ -1949,11 +2022,12 @@ def list_metas():
     if g.current_user["role"] == "admin":
         metas = db.execute("""
             SELECT m.*, cu.nome as criado_por_nome, eu.nome as escopo_user_nome,
-                   ex.nome as excluida_por_nome
+                   ex.nome as excluida_por_nome, pr.nome as alvo_produto_nome
             FROM metas m
             LEFT JOIN users cu ON cu.id = m.criado_por
             LEFT JOIN users eu ON eu.id = m.escopo_user_id
             LEFT JOIN users ex ON ex.id = m.excluida_por
+            LEFT JOIN produtos pr ON pr.id = m.alvo_produto_id
             ORDER BY m.created_at DESC
         """).fetchall()
         saida = []
@@ -1991,8 +2065,13 @@ def list_metas():
                 WHERE mp.meta_id = ? AND mp.user_id = ?
                 ORDER BY mp.created_at DESC LIMIT 50
             """, (m["id"], uid)).fetchall()]
+        nome_prod = None
+        if m["alvo_vendas"] == "produto" and m["alvo_produto_id"]:
+            pr = db.execute("SELECT nome FROM produtos WHERE id = ?", (m["alvo_produto_id"],)).fetchone()
+            nome_prod = pr["nome"] if pr else None
         saida.append({"id": m["id"], "titulo": m["titulo"], "descricao": m["descricao"],
                       "tipo": m["tipo"], "alvo_vendas": m["alvo_vendas"],
+                      "alvo_produto_nome": nome_prod,
                       "quantidade": m["quantidade"], "apuracao": m["apuracao"],
                       "periodo_tipo": m["periodo_tipo"], "data_inicio": m["data_inicio"],
                       "data_fim": m["data_fim"], "meu_progresso": meu,
@@ -2015,10 +2094,17 @@ def create_meta():
     if tipo not in ("vendas", "manual"):
         return jsonify({"error": "Tipo de meta inválido."}), 400
     alvo_vendas = None
+    alvo_produto_id = None
     if tipo == "vendas":
         alvo_vendas = body.get("alvo_vendas") or "qualquer"
         if alvo_vendas not in ALVOS_VENDA_META:
             return jsonify({"error": "Escolha o que conta como venda para esta meta."}), 400
+        if alvo_vendas == "produto":
+            alvo_produto_id = body.get("alvo_produto_id")
+            p = get_db().execute("SELECT id FROM produtos WHERE id = ? AND ativo = 1",
+                                 (alvo_produto_id,)).fetchone()
+            if not p:
+                return jsonify({"error": "Escolha um produto ativo do catálogo para esta meta."}), 400
     quantidade = _int_or_none(body.get("quantidade"))
     if not quantidade:
         return jsonify({"error": "Informe a quantidade alvo (número maior que zero)."}), 400
@@ -2046,13 +2132,13 @@ def create_meta():
             return jsonify({"error": "Período definido exige data de início e de fim (fim após o início)."}), 400
     mid = new_id()
     db.execute("""
-        INSERT INTO metas (id, titulo, descricao, tipo, alvo_vendas, quantidade, apuracao,
-                           escopo, escopo_user_id, periodo_tipo, data_inicio, data_fim,
+        INSERT INTO metas (id, titulo, descricao, tipo, alvo_vendas, alvo_produto_id, quantidade,
+                           apuracao, escopo, escopo_user_id, periodo_tipo, data_inicio, data_fim,
                            criado_por, created_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, (mid, titulo, (body.get("descricao") or "").strip() or None, tipo, alvo_vendas,
-          quantidade, apuracao, escopo, escopo_user_id, periodo_tipo, data_inicio, data_fim,
-          g.current_user["id"], now_iso()))
+          alvo_produto_id, quantidade, apuracao, escopo, escopo_user_id, periodo_tipo,
+          data_inicio, data_fim, g.current_user["id"], now_iso()))
     audit("create", "metas", mid, {"titulo": titulo, "escopo": escopo, "apuracao": apuracao,
                                    "periodo": periodo_tipo})
     db.commit()
@@ -2571,6 +2657,10 @@ def migrate_missing_columns(conn):
             "origem_recompra": "INTEGER NOT NULL DEFAULT 0",
             "categoria": "TEXT NOT NULL DEFAULT 'padrao'",
             "produto_software": "TEXT",
+            "produto_id": "TEXT",
+        },
+        "metas": {
+            "alvo_produto_id": "TEXT",
         },
     }
     for tabela, colunas in tabelas_e_colunas.items():

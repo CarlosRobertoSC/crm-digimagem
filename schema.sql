@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS deals (
     origem_recompra          INTEGER NOT NULL DEFAULT 0,  -- 1 = criado pelo ciclo 🔁
     categoria                TEXT NOT NULL DEFAULT 'padrao',  -- 'padrao' | 'software'
     produto_software         TEXT,  -- revele_momentos | revele_momentos_frontier
+    produto_id               TEXT REFERENCES produtos(id),  -- 📦 produto do catálogo (opcional)
     created_at               TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at                TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -124,7 +125,8 @@ CREATE TABLE IF NOT EXISTS metas (
     titulo         TEXT NOT NULL,
     descricao      TEXT,
     tipo           TEXT NOT NULL CHECK(tipo IN ('vendas','manual')),
-    alvo_vendas    TEXT,      -- p/ tipo vendas: qualquer|padrao|software_qualquer|revele_momentos|revele_momentos_frontier
+    alvo_vendas    TEXT,      -- qualquer|padrao|software_qualquer|revele_momentos|revele_momentos_frontier|produto
+    alvo_produto_id TEXT REFERENCES produtos(id),  -- quando alvo_vendas = 'produto'
     quantidade     INTEGER NOT NULL,
     apuracao       TEXT NOT NULL CHECK(apuracao IN ('individual','coletiva')) DEFAULT 'individual',
     escopo         TEXT NOT NULL CHECK(escopo IN ('todos','vendedores','individual')),
@@ -150,6 +152,15 @@ CREATE TABLE IF NOT EXISTS meta_progresso (
 );
 
 CREATE INDEX IF NOT EXISTS idx_meta_prog_meta ON meta_progresso(meta_id);
+
+-- 📦 Catálogo de produtos (admin gerencia): vincula negócios a metas.
+CREATE TABLE IF NOT EXISTS produtos (
+    id         TEXT PRIMARY KEY,
+    nome       TEXT NOT NULL,
+    ativo      INTEGER NOT NULL DEFAULT 1,
+    criado_por TEXT REFERENCES users(id),
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 CREATE INDEX IF NOT EXISTS idx_deal_notes_user ON deal_notes(user_id);
 CREATE INDEX IF NOT EXISTS idx_stage_history_data ON deal_stage_history(data_transicao);
 CREATE INDEX IF NOT EXISTS idx_stage_history_etapa_nova ON deal_stage_history(etapa_nova);
