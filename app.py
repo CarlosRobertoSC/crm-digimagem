@@ -2029,11 +2029,13 @@ def list_metas():
     if g.current_user["role"] == "admin":
         metas = db.execute("""
             SELECT m.*, cu.nome as criado_por_nome, eu.nome as escopo_user_nome,
-                   ex.nome as excluida_por_nome, pr.nome as alvo_produto_nome
+                   ex.nome as excluida_por_nome, ed.nome as editada_por_nome,
+                   pr.nome as alvo_produto_nome
             FROM metas m
             LEFT JOIN users cu ON cu.id = m.criado_por
             LEFT JOIN users eu ON eu.id = m.escopo_user_id
             LEFT JOIN users ex ON ex.id = m.excluida_por
+            LEFT JOIN users ed ON ed.id = m.editada_por
             LEFT JOIN produtos pr ON pr.id = m.alvo_produto_id
             ORDER BY m.created_at DESC
         """).fetchall()
@@ -2088,55 +2090,82 @@ def list_metas():
     return jsonify({"admin": False, "metas": saida})
 
 
+def _validar_meta_body(body, db):
+    """Valida e normaliza o payload de meta (criação E edição).
+    Retorna (campos_dict, None) quando ok, ou (None, (resposta, status))."""
+    titulo = (body.get("titulo") or "").strip()
+    if not titulo:
+        return None, (jsonify({"error": "Dê um título à meta."}), 400)
+    tipo = body.get("tipo") or "vendas"
+    if tipo not in ("vendas", "manual"):
+        return None, (jsonify({"error": "Tipo de meta inválido."}), 400)
+    alvo_vendas = None
+    alvo_produto_id = None
+    if tipo == "vendas":
+        alvo_vendas = body.get("alvo_vendas") or "qualquer"
+        if alvo_vendas not in ALVOS_VENDA_META:
+            return None, (jsonify({"error": "Escolha o que conta como venda para esta meta."}), 400)
+        if alvo_vendas == "produto":
+            alvo_produto_id = body.get("alvo_produto_id")
+            p = db.execute("SELECT id FROM produtos WHERE id = ? AND ativo = 1",
+                           (alvo_produto_id,)).fetchone()
+            if not p:
+                return None, (jsonify({"error": "Escolha um produto ativo do catálogo para esta meta."}), 400)
+    quantidade = _int_or_none(body.get("quantidade"))
+    if not quantidade:
+        return None, (jsonify({"error": "Informe a quantidade alvo (número maior que zero)."}), 400)
+    apuracao = body.get("apuracao") or "individual"
+    if apuracao not in ("individual", "coletiva"):
+        return None, (jsonify({"error": "Apuração inválida."}), 400)
+    escopo = body.get("escopo") or "todos"
+    if escopo not in ("todos", "vendedores", "individual"):
+        return None, (jsonify({"error": "Escopo inválido."}), 400)
+    escopo_user_id = None
+    if escopo == "individual":
+        escopo_user_id = body.get("escopo_user_id")
+        u = db.execute("SELECT id FROM users WHERE id = ? AND ativo = 1", (escopo_user_id,)).fetchone()
+        if not u:
+            return None, (jsonify({"error": "Para meta individual, escolha o usuário no campo correspondente."}), 400)
+    periodo_tipo = body.get("periodo_tipo") or "mensal"
+    if periodo_tipo not in ("mensal", "periodo", "sem_fim"):
+        return None, (jsonify({"error": "Período inválido."}), 400)
+    data_inicio = data_fim = None
+    if periodo_tipo == "periodo":
+        data_inicio = (body.get("data_inicio") or "").strip() or None
+        data_fim = (body.get("data_fim") or "").strip() or None
+        if not data_inicio or not data_fim or data_fim < data_inicio:
+            return None, (jsonify({"error": "Período definido exige data de início e de fim (fim após o início)."}), 400)
+    return {
+        "titulo": titulo, "descricao": (body.get("descricao") or "").strip() or None,
+        "tipo": tipo, "alvo_vendas": alvo_vendas, "alvo_produto_id": alvo_produto_id,
+        "quantidade": quantidade, "apuracao": apuracao, "escopo": escopo,
+        "escopo_user_id": escopo_user_id, "periodo_tipo": periodo_tipo,
+        "data_inicio": data_inicio, "data_fim": data_fim,
+    }, None
+
+
 @app.post("/api/metas")
 @login_required
 def create_meta():
     if g.current_user["role"] != "admin":
         return jsonify({"error": "Apenas administradores criam metas."}), 403
     body = request.get_json(force=True, silent=True) or {}
-    titulo = (body.get("titulo") or "").strip()
-    if not titulo:
-        return jsonify({"error": "Dê um título à meta."}), 400
-    tipo = body.get("tipo") or "vendas"
-    if tipo not in ("vendas", "manual"):
-        return jsonify({"error": "Tipo de meta inválido."}), 400
-    alvo_vendas = None
-    alvo_produto_id = None
-    if tipo == "vendas":
-        alvo_vendas = body.get("alvo_vendas") or "qualquer"
-        if alvo_vendas not in ALVOS_VENDA_META:
-            return jsonify({"error": "Escolha o que conta como venda para esta meta."}), 400
-        if alvo_vendas == "produto":
-            alvo_produto_id = body.get("alvo_produto_id")
-            p = get_db().execute("SELECT id FROM produtos WHERE id = ? AND ativo = 1",
-                                 (alvo_produto_id,)).fetchone()
-            if not p:
-                return jsonify({"error": "Escolha um produto ativo do catálogo para esta meta."}), 400
-    quantidade = _int_or_none(body.get("quantidade"))
-    if not quantidade:
-        return jsonify({"error": "Informe a quantidade alvo (número maior que zero)."}), 400
-    apuracao = body.get("apuracao") or "individual"
-    if apuracao not in ("individual", "coletiva"):
-        return jsonify({"error": "Apuração inválida."}), 400
-    escopo = body.get("escopo") or "todos"
-    if escopo not in ("todos", "vendedores", "individual"):
-        return jsonify({"error": "Escopo inválido."}), 400
     db = get_db()
-    escopo_user_id = None
-    if escopo == "individual":
-        escopo_user_id = body.get("escopo_user_id")
-        u = db.execute("SELECT id FROM users WHERE id = ? AND ativo = 1", (escopo_user_id,)).fetchone()
-        if not u:
-            return jsonify({"error": "Para meta individual, escolha o usuário no campo correspondente."}), 400
-    periodo_tipo = body.get("periodo_tipo") or "mensal"
-    if periodo_tipo not in ("mensal", "periodo", "sem_fim"):
-        return jsonify({"error": "Período inválido."}), 400
-    data_inicio = data_fim = None
-    if periodo_tipo == "periodo":
-        data_inicio = (body.get("data_inicio") or "").strip() or None
-        data_fim = (body.get("data_fim") or "").strip() or None
-        if not data_inicio or not data_fim or data_fim < data_inicio:
-            return jsonify({"error": "Período definido exige data de início e de fim (fim após o início)."}), 400
+    campos, erro = _validar_meta_body(body, db)
+    if erro:
+        return erro
+    titulo = campos["titulo"]
+    tipo = campos["tipo"]
+    alvo_vendas = campos["alvo_vendas"]
+    alvo_produto_id = campos["alvo_produto_id"]
+    quantidade = campos["quantidade"]
+    apuracao = campos["apuracao"]
+    escopo = campos["escopo"]
+    escopo_user_id = campos["escopo_user_id"]
+    periodo_tipo = campos["periodo_tipo"]
+    data_inicio = campos["data_inicio"]
+    data_fim = campos["data_fim"]
+    body = {**body, "descricao": campos["descricao"]}
     mid = new_id()
     db.execute("""
         INSERT INTO metas (id, titulo, descricao, tipo, alvo_vendas, alvo_produto_id, quantidade,
@@ -2150,6 +2179,39 @@ def create_meta():
                                    "periodo": periodo_tipo})
     db.commit()
     return jsonify({"id": mid}), 201
+
+
+@app.put("/api/metas/<meta_id>")
+@login_required
+def update_meta(meta_id):
+    """Edita uma meta existente (admin). Metas excluídas não são editáveis.
+    O progresso é recalculado ao vivo com as novas regras; estender a data
+    fim de uma meta encerrada a reativa automaticamente."""
+    if g.current_user["role"] != "admin":
+        return jsonify({"error": "Apenas administradores editam metas."}), 403
+    db = get_db()
+    m = db.execute("SELECT * FROM metas WHERE id = ?", (meta_id,)).fetchone()
+    if not m:
+        return jsonify({"error": "Meta não encontrada."}), 404
+    if m["status"] == "excluida":
+        return jsonify({"error": "Meta excluída não pode ser editada — crie uma nova."}), 400
+    body = request.get_json(force=True, silent=True) or {}
+    campos, erro = _validar_meta_body(body, db)
+    if erro:
+        return erro
+    db.execute("""
+        UPDATE metas SET titulo = ?, descricao = ?, tipo = ?, alvo_vendas = ?, alvo_produto_id = ?,
+            quantidade = ?, apuracao = ?, escopo = ?, escopo_user_id = ?, periodo_tipo = ?,
+            data_inicio = ?, data_fim = ?, editada_por = ?, editada_em = ?
+        WHERE id = ?
+    """, (campos["titulo"], campos["descricao"], campos["tipo"], campos["alvo_vendas"],
+          campos["alvo_produto_id"], campos["quantidade"], campos["apuracao"], campos["escopo"],
+          campos["escopo_user_id"], campos["periodo_tipo"], campos["data_inicio"], campos["data_fim"],
+          g.current_user["id"], now_iso(), meta_id))
+    audit("update", "metas", meta_id, {"titulo": campos["titulo"], "escopo": campos["escopo"],
+                                       "periodo": campos["periodo_tipo"]})
+    db.commit()
+    return jsonify({"ok": True})
 
 
 @app.delete("/api/metas/<meta_id>")
@@ -2669,6 +2731,8 @@ def migrate_missing_columns(conn):
         },
         "metas": {
             "alvo_produto_id": "TEXT",
+            "editada_por": "TEXT",
+            "editada_em": "TEXT",
         },
     }
     for tabela, colunas in tabelas_e_colunas.items():

@@ -139,7 +139,9 @@ CREATE TABLE IF NOT EXISTS metas (
     criado_por     TEXT REFERENCES users(id),
     created_at     TEXT NOT NULL DEFAULT (datetime('now')),
     excluida_por   TEXT,
-    excluida_em    TEXT
+    excluida_em    TEXT,
+    editada_por    TEXT,
+    editada_em     TEXT
 );
 
 -- registros de progresso das metas MANUAIS (histórico de trabalho)

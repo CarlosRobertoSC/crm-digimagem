@@ -2248,7 +2248,17 @@ async function loadMetasView() {
     : `<div class="empty-state">Nenhuma meta ativa para você no momento.</div>`;
 }
 
+let METAS_ADMIN_CACHE = [];
+let SELECTED_EDIT_META = null;
+
+function editarMeta(id) {
+  SELECTED_EDIT_META = METAS_ADMIN_CACHE.find(m => m.id === id);
+  if (!SELECTED_EDIT_META) return;
+  openModal("editar_meta");
+}
+
 function renderMetasAdmin(metas) {
+  METAS_ADMIN_CACHE = metas;
   const box = document.getElementById("metasAdminLista");
   if (!metas.length) {
     box.innerHTML = `<div class="empty-state">Nenhuma meta criada ainda. Use "+ Nova meta".</div>`;
@@ -2263,10 +2273,10 @@ function renderMetasAdmin(metas) {
     <div class="meta-card">
       <div class="meta-top">
         <span class="meta-titulo">${esc(m.titulo)} ${sit}</span>
-        ${m.situacao !== "excluida" ? `<button class="btn-mini" style="border-color:var(--urgent);color:var(--urgent);" onclick="excluirMeta('${esc(m.id)}')">🗑 Excluir</button>` : ""}
+        ${m.situacao !== "excluida" ? `<span style="display:flex;gap:6px;"><button class="btn-mini" onclick="editarMeta('${esc(m.id)}')">✎ Editar</button><button class="btn-mini" style="border-color:var(--urgent);color:var(--urgent);" onclick="excluirMeta('${esc(m.id)}')">🗑 Excluir</button></span>` : ""}
       </div>
       <div class="meta-desc">${m.descricao ? esc(m.descricao) + " · " : ""}${m.tipo === "vendas" ? "automática — conta vendas ganhas " + alvoVendaLabel(m.alvo_vendas, m.alvo_produto_nome) : "manual — o usuário registra o progresso"} · alvo <b>${m.quantidade}</b> (${m.apuracao === "coletiva" ? "soma do grupo" : "por pessoa"}) · ${escopoLabel} · ${esc(prazoMetaLabel(m))}</div>
-      <div class="meta-desc" style="font-size:10.5px;">criada por <b>${esc(m.criado_por_nome || "?")}</b> em ${fmtDataHist(m.created_at)}${m.situacao === "excluida" && m.excluida_em ? ` · excluída por <b>${esc(m.excluida_por_nome || "?")}</b> em ${fmtDataHist(m.excluida_em)}` : ""}</div>
+      <div class="meta-desc" style="font-size:10.5px;">criada por <b>${esc(m.criado_por_nome || "?")}</b> em ${fmtDataHist(m.created_at)}${m.editada_em ? ` · editada por <b>${esc(m.editada_por_nome || "?")}</b> em ${fmtDataHist(m.editada_em)}` : ""}${m.situacao === "excluida" && m.excluida_em ? ` · excluída por <b>${esc(m.excluida_por_nome || "?")}</b> em ${fmtDataHist(m.excluida_em)}` : ""}</div>
       ${m.apuracao === "coletiva" ? `<div class="meta-barra"><div style="width:${Math.min(100, Math.round((m.progresso_total || 0) / m.quantidade * 100))}%"></div></div><div class="meta-prog-label"><span>grupo: ${m.progresso_total || 0}/${m.quantidade}</span><span>${m.atingida_coletiva ? "atingida ✓" : ""}</span></div>` : ""}
       <table class="report-table" style="margin-top:10px;">
         <thead><tr><th>Participante</th><th>Progresso</th><th>Situação</th></tr></thead>
@@ -2810,6 +2820,33 @@ const MODAL_CONFIG = {
       refreshAll();
     },
   },
+  editar_meta: {
+    title: "Editar meta",
+    get fields() { return MODAL_CONFIG.meta.fields; },
+    prefill: async () => {
+      const m = SELECTED_EDIT_META || {};
+      return {
+        titulo: m.titulo, descricao: m.descricao || "",
+        tipo: m.tipo,
+        alvo_vendas: m.alvo_vendas === "produto" ? `prod:${m.alvo_produto_id}` : (m.alvo_vendas || "qualquer"),
+        quantidade: m.quantidade, apuracao: m.apuracao,
+        escopo: m.escopo, escopo_user_id: m.escopo_user_id || "",
+        periodo_tipo: m.periodo_tipo,
+        data_inicio: m.data_inicio || "", data_fim: m.data_fim || "",
+      };
+    },
+    submit: async (values) => {
+      if (values.alvo_vendas && values.alvo_vendas.startsWith("prod:")) {
+        values.alvo_produto_id = values.alvo_vendas.slice(5);
+        values.alvo_vendas = "produto";
+      }
+      return api(`/metas/${SELECTED_EDIT_META.id}`, { method: "PUT", body: JSON.stringify(values) });
+    },
+    onSuccess: async () => {
+      if (CURRENT_VIEW === "metas") loadMetasView();
+      refreshAll();
+    },
+  },
   meta_progresso: {
     title: "Registrar progresso na meta (+1)",
     fields: [
@@ -2827,7 +2864,7 @@ const MODAL_CONFIG = {
 
 let ACTIVE_MODAL = null;
 
-const ADMIN_ONLY_MODALS = ["usuario", "editar_usuario", "delegada", "meta"];
+const ADMIN_ONLY_MODALS = ["usuario", "editar_usuario", "delegada", "meta", "editar_meta"];
 
 // ------------------------------------------------------------------
 // Busca automática de CNPJ (Receita Federal via BrasilAPI) e CEP (ViaCEP)
@@ -2941,7 +2978,7 @@ async function openModal(kind) {
       ? { ...f, options: [f.options[0], ...opsProdutos, ...f.options.slice(1)] }
       : f);
   }
-  if (kind === "meta") {
+  if (kind === "meta" || kind === "editar_meta") {
     const usuarios = await api("/users");
     await carregarProdutos();
     const opsProdutos = PRODUTOS_CACHE.filter(p => p.ativo).map(p => [`prod:${p.id}`, `📦 Produto — ${p.nome}`]);
