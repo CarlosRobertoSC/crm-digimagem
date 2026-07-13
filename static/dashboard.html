@@ -2267,8 +2267,12 @@ function renderMetasAdmin(metas) {
   box.innerHTML = metas.map(m => {
     const sit = m.situacao === "ativa" ? `<span class="pill ganho">ativa</span>`
       : (m.situacao === "encerrada" ? `<span class="pill">encerrada</span>` : `<span class="pill perdido">excluída</span>`);
+    const nomesSel = (m.participantes || []).map(p => p.nome);
     const escopoLabel = m.escopo === "todos" ? "👥 toda a equipe (com admins)"
-      : (m.escopo === "vendedores" ? "👥 equipe de vendedores" : `👤 individual: ${esc(m.escopo_user_nome || "?")}`);
+      : (m.escopo === "vendedores" ? "👥 equipe de vendedores"
+      : (m.escopo === "selecionados"
+        ? `👤 selecionados (${nomesSel.length}): ${esc(nomesSel.slice(0, 4).join(", "))}${nomesSel.length > 4 ? ` +${nomesSel.length - 4}` : ""}`
+        : `👤 individual: ${esc(m.escopo_user_nome || "?")}`));
     return `
     <div class="meta-card">
       <div class="meta-top">
@@ -2797,9 +2801,9 @@ const MODAL_CONFIG = {
       { name: "escopo", label: "Quem participa", type: "select", options: [
         ["todos", "👥 Toda a equipe (inclui administradores)"],
         ["vendedores", "👥 Equipe de vendedores"],
-        ["individual", "👤 Um usuário específico (escolha abaixo)"],
+        ["selecionados", "👤 Usuários específicos — marque abaixo (1 ou mais)"],
       ] },
-      { name: "escopo_user_id", label: "Usuário da meta individual", type: "select", options: [["", "—"]] },
+      { name: "escopo_users", label: "👤 Usuários da meta (só p/ escopo 'usuários específicos')", type: "checkboxes", options: [] },
       { name: "periodo_tipo", label: "Período", type: "select", options: [
         ["mensal", "Mensal recorrente — zera todo mês, sem data para acabar"],
         ["periodo", "Período definido — início e fim abaixo"],
@@ -2830,7 +2834,10 @@ const MODAL_CONFIG = {
         tipo: m.tipo,
         alvo_vendas: m.alvo_vendas === "produto" ? `prod:${m.alvo_produto_id}` : (m.alvo_vendas || "qualquer"),
         quantidade: m.quantidade, apuracao: m.apuracao,
-        escopo: m.escopo, escopo_user_id: m.escopo_user_id || "",
+        escopo: m.escopo === "individual" ? "selecionados" : m.escopo,
+        escopo_users: m.escopo === "individual"
+          ? [m.escopo_user_id].filter(Boolean)
+          : (() => { try { return JSON.parse(m.escopo_users || "[]"); } catch { return []; } })(),
         periodo_tipo: m.periodo_tipo,
         data_inicio: m.data_inicio || "", data_fim: m.data_fim || "",
       };
@@ -2983,9 +2990,9 @@ async function openModal(kind) {
     await carregarProdutos();
     const opsProdutos = PRODUTOS_CACHE.filter(p => p.ativo).map(p => [`prod:${p.id}`, `📦 Produto — ${p.nome}`]);
     fields = cfg.fields.map(f => {
-      if (f.name === "escopo_user_id") {
-        return { ...f, options: [["", "— só preencher se o escopo for individual —"],
-          ...usuarios.filter(u => u.ativo).map(u => [u.id, u.nome + (u.role === "admin" ? " (admin)" : "")])] };
+      if (f.name === "escopo_users") {
+        return { ...f, options: usuarios.filter(u => u.ativo)
+          .map(u => [u.id, u.nome + (u.role === "admin" ? " (admin)" : "")]) };
       }
       if (f.name === "alvo_vendas") {
         return { ...f, options: [...f.options, ...opsProdutos] };

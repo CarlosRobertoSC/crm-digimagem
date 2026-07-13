@@ -1959,7 +1959,22 @@ def _meta_janela(m):
     return "1970-01-01 00:00:00", "9999-12-31 23:59:59"
 
 
+def _meta_ids_selecionados(m):
+    try:
+        ids = json.loads(m["escopo_users"] or "[]")
+        return ids if isinstance(ids, list) else []
+    except Exception:
+        return []
+
+
 def _meta_participantes(db, m):
+    if m["escopo"] == "selecionados":
+        ids = _meta_ids_selecionados(m)
+        if not ids:
+            return []
+        return db.execute(
+            f"SELECT id, nome, role FROM users WHERE id IN ({','.join('?' * len(ids))}) ORDER BY nome",
+            ids).fetchall()
     if m["escopo"] == "individual":
         return db.execute("SELECT id, nome, role FROM users WHERE id = ?",
                           (m["escopo_user_id"],)).fetchall()
@@ -2014,6 +2029,8 @@ def _metas_do_usuario(db, uid, role):
             if m["data_fim"] and hoje > m["data_fim"]:
                 continue
         if m["escopo"] == "individual" and m["escopo_user_id"] != uid:
+            continue
+        if m["escopo"] == "selecionados" and uid not in _meta_ids_selecionados(m):
             continue
         if m["escopo"] == "vendedores" and role != "vendedor":
             continue
@@ -2118,14 +2135,26 @@ def _validar_meta_body(body, db):
     if apuracao not in ("individual", "coletiva"):
         return None, (jsonify({"error": "Apuração inválida."}), 400)
     escopo = body.get("escopo") or "todos"
-    if escopo not in ("todos", "vendedores", "individual"):
+    if escopo not in ("todos", "vendedores", "individual", "selecionados"):
         return None, (jsonify({"error": "Escopo inválido."}), 400)
     escopo_user_id = None
+    escopo_users = None
     if escopo == "individual":
         escopo_user_id = body.get("escopo_user_id")
         u = db.execute("SELECT id FROM users WHERE id = ? AND ativo = 1", (escopo_user_id,)).fetchone()
         if not u:
             return None, (jsonify({"error": "Para meta individual, escolha o usuário no campo correspondente."}), 400)
+    if escopo == "selecionados":
+        ids = body.get("escopo_users")
+        if not isinstance(ids, list) or not ids:
+            return None, (jsonify({"error": "Marque ao menos um usuário para a meta de usuários específicos."}), 400)
+        ids = list(dict.fromkeys(ids))  # remove duplicados preservando a ordem
+        validos = db.execute(
+            f"SELECT COUNT(*) c FROM users WHERE ativo = 1 AND id IN ({','.join('?' * len(ids))})",
+            ids).fetchone()["c"]
+        if validos != len(ids):
+            return None, (jsonify({"error": "Um dos usuários marcados é inválido ou está inativo."}), 400)
+        escopo_users = json.dumps(ids)
     periodo_tipo = body.get("periodo_tipo") or "mensal"
     if periodo_tipo not in ("mensal", "periodo", "sem_fim"):
         return None, (jsonify({"error": "Período inválido."}), 400)
@@ -2139,8 +2168,8 @@ def _validar_meta_body(body, db):
         "titulo": titulo, "descricao": (body.get("descricao") or "").strip() or None,
         "tipo": tipo, "alvo_vendas": alvo_vendas, "alvo_produto_id": alvo_produto_id,
         "quantidade": quantidade, "apuracao": apuracao, "escopo": escopo,
-        "escopo_user_id": escopo_user_id, "periodo_tipo": periodo_tipo,
-        "data_inicio": data_inicio, "data_fim": data_fim,
+        "escopo_user_id": escopo_user_id, "escopo_users": escopo_users,
+        "periodo_tipo": periodo_tipo, "data_inicio": data_inicio, "data_fim": data_fim,
     }, None
 
 
@@ -2169,12 +2198,12 @@ def create_meta():
     mid = new_id()
     db.execute("""
         INSERT INTO metas (id, titulo, descricao, tipo, alvo_vendas, alvo_produto_id, quantidade,
-                           apuracao, escopo, escopo_user_id, periodo_tipo, data_inicio, data_fim,
-                           criado_por, created_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-    """, (mid, titulo, (body.get("descricao") or "").strip() or None, tipo, alvo_vendas,
-          alvo_produto_id, quantidade, apuracao, escopo, escopo_user_id, periodo_tipo,
-          data_inicio, data_fim, g.current_user["id"], now_iso()))
+                           apuracao, escopo, escopo_user_id, escopo_users, periodo_tipo,
+                           data_inicio, data_fim, criado_por, created_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    """, (mid, titulo, campos["descricao"], tipo, alvo_vendas,
+          alvo_produto_id, quantidade, apuracao, escopo, escopo_user_id, campos["escopo_users"],
+          periodo_tipo, data_inicio, data_fim, g.current_user["id"], now_iso()))
     audit("create", "metas", mid, {"titulo": titulo, "escopo": escopo, "apuracao": apuracao,
                                    "periodo": periodo_tipo})
     db.commit()
@@ -2201,13 +2230,13 @@ def update_meta(meta_id):
         return erro
     db.execute("""
         UPDATE metas SET titulo = ?, descricao = ?, tipo = ?, alvo_vendas = ?, alvo_produto_id = ?,
-            quantidade = ?, apuracao = ?, escopo = ?, escopo_user_id = ?, periodo_tipo = ?,
-            data_inicio = ?, data_fim = ?, editada_por = ?, editada_em = ?
+            quantidade = ?, apuracao = ?, escopo = ?, escopo_user_id = ?, escopo_users = ?,
+            periodo_tipo = ?, data_inicio = ?, data_fim = ?, editada_por = ?, editada_em = ?
         WHERE id = ?
     """, (campos["titulo"], campos["descricao"], campos["tipo"], campos["alvo_vendas"],
           campos["alvo_produto_id"], campos["quantidade"], campos["apuracao"], campos["escopo"],
-          campos["escopo_user_id"], campos["periodo_tipo"], campos["data_inicio"], campos["data_fim"],
-          g.current_user["id"], now_iso(), meta_id))
+          campos["escopo_user_id"], campos["escopo_users"], campos["periodo_tipo"],
+          campos["data_inicio"], campos["data_fim"], g.current_user["id"], now_iso(), meta_id))
     audit("update", "metas", meta_id, {"titulo": campos["titulo"], "escopo": campos["escopo"],
                                        "periodo": campos["periodo_tipo"]})
     db.commit()
@@ -2733,6 +2762,7 @@ def migrate_missing_columns(conn):
             "alvo_produto_id": "TEXT",
             "editada_por": "TEXT",
             "editada_em": "TEXT",
+            "escopo_users": "TEXT",
         },
     }
     for tabela, colunas in tabelas_e_colunas.items():

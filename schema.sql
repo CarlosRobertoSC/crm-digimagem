@@ -130,8 +130,9 @@ CREATE TABLE IF NOT EXISTS metas (
     alvo_produto_id TEXT REFERENCES produtos(id),  -- quando alvo_vendas = 'produto'
     quantidade     INTEGER NOT NULL,
     apuracao       TEXT NOT NULL CHECK(apuracao IN ('individual','coletiva')) DEFAULT 'individual',
-    escopo         TEXT NOT NULL CHECK(escopo IN ('todos','vendedores','individual')),
-    escopo_user_id TEXT REFERENCES users(id),
+    escopo         TEXT NOT NULL CHECK(escopo IN ('todos','vendedores','individual','selecionados')),
+    escopo_user_id TEXT REFERENCES users(id),      -- legado: escopo 'individual'
+    escopo_users   TEXT,                            -- JSON: ids p/ escopo 'selecionados'
     periodo_tipo   TEXT NOT NULL CHECK(periodo_tipo IN ('mensal','periodo','sem_fim')),
     data_inicio    TEXT,
     data_fim       TEXT,
