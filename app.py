@@ -33,7 +33,10 @@ from flask import Flask, request, jsonify, g, send_from_directory, Response
 from werkzeug.security import generate_password_hash, check_password_hash
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 
-DB_PATH = "crm.db"
+# Caminho do banco: em produção, aponte para FORA da pasta do código
+# (ex.: CRM_DB_PATH=/opt/crm/data/crm.db) — assim as atualizações do app
+# nunca tocam nos dados.
+DB_PATH = os.environ.get("CRM_DB_PATH", "crm.db")
 SECRET_KEY = os.environ.get("SECRET_KEY", "troque-esta-chave-em-producao-para-algo-aleatorio")
 if SECRET_KEY == "troque-esta-chave-em-producao-para-algo-aleatorio":
     print("[AVISO] Usando SECRET_KEY padrão de desenvolvimento. Defina a variável de "
@@ -54,9 +57,11 @@ app = Flask(__name__, static_folder="static", static_url_path="")
 # ------------------------------------------------------------------
 def get_db():
     if "db" not in g:
-        g.db = sqlite3.connect(DB_PATH)
+        g.db = sqlite3.connect(DB_PATH, timeout=15)
         g.db.row_factory = sqlite3.Row
         g.db.execute("PRAGMA foreign_keys = ON")
+        g.db.execute("PRAGMA journal_mode = WAL")   # leituras não bloqueiam escritas
+        g.db.execute("PRAGMA busy_timeout = 15000")
     return g.db
 
 
@@ -2782,7 +2787,18 @@ def init_db_if_needed():
     already_seeded = conn.execute("SELECT COUNT(*) c FROM users").fetchone()["c"] > 0
     if not already_seeded:
         fresh = True
-        seed(conn)
+        if os.environ.get("CRM_SEED_DEMO", "1") == "0":
+            # PRODUÇÃO (CRM_SEED_DEMO=0): nada de dados de exemplo — cria só o
+            # administrador inicial. Troque a senha no primeiro acesso (Equipe).
+            conn.execute(
+                "INSERT INTO users (id, nome, email, senha_hash, role) VALUES (?,?,?,?,?)",
+                (new_id(),
+                 os.environ.get("CRM_ADMIN_NOME", "Administrador"),
+                 os.environ.get("CRM_ADMIN_EMAIL", "admin@digimagem.com"),
+                 generate_password_hash(os.environ.get("CRM_ADMIN_SENHA", "trocar123")),
+                 "admin"))
+        else:
+            seed(conn)
     # 🎯 Bootstrap único: se NUNCA existiu meta alguma (nem excluída), cria a
     # meta padrão do software — a antiga meta fixa do código, agora editável
     # e excluível pelo administrador na tela Metas.
