@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS deals (
     categoria                TEXT NOT NULL DEFAULT 'padrao',  -- 'padrao' | 'software'
     produto_software         TEXT,  -- revele_momentos | revele_momentos_frontier
     produto_id               TEXT REFERENCES produtos(id),  -- 📦 produto do catálogo (opcional)
+    produto_qtd              INTEGER,  -- 📦 unidades negociadas (NULL = 1)
     created_at               TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at                TEXT NOT NULL DEFAULT (datetime('now'))
 );

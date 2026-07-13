@@ -2388,7 +2388,7 @@ async function renderHistorico() {
   document.getElementById("histSub").innerHTML =
     `${esc(d.cliente_nome)} · vendedor: <b>${esc(d.vendedor_nome || "—")}</b>` +
     ` · R$ ${Number(d.valor_estimado).toLocaleString("pt-BR")}` +
-    (d.produto_nome ? ` · 📦 ${esc(d.produto_nome)}` : "") +
+    (d.produto_nome ? ` · 📦 ${esc(d.produto_nome)}${(d.produto_qtd || 1) > 1 ? ` ×${esc(d.produto_qtd)}` : ""}` : "") +
     (d.cliente_rolos_mes ? ` · ~${esc(d.cliente_rolos_mes)} rolos/mês` : "") +
     ` · <span class="pill ${esc(d.status)}">${esc(ETAPA_LABEL[d.etapa_funil] || d.etapa_funil)}</span>`;
   const comoGestor = CURRENT_USER.role === "admin" && d.user_id && d.user_id !== CURRENT_USER.id;
@@ -2608,6 +2608,7 @@ const MODAL_CONFIG = {
           ["revele_momentos", "🎞 Software — Revele Momentos"],
           ["revele_momentos_frontier", "🎞 Software — Revele Momentos Frontier"],
         ] },
+      { name: "produto_qtd", label: "📦 Quantidade de unidades (se escolheu um produto acima — padrão 1)", type: "number" },
       { name: "titulo", label: "Título do negócio (ex.: Assinatura Revele Momentos)", type: "text", required: true },
       { name: "valor_estimado", label: "Valor estimado (R$)", type: "number" },
       { name: "etapa_funil", label: "Etapa", type: "select",
@@ -2619,7 +2620,11 @@ const MODAL_CONFIG = {
       values.valor_estimado = values.valor_estimado ? Number(values.valor_estimado) : 0;
       if (values.tipo_negocio && values.tipo_negocio.startsWith("prod:")) {
         values.produto_id = values.tipo_negocio.slice(5); // venda padrão + elo com o produto/meta
-      } else if (values.tipo_negocio && values.tipo_negocio !== "padrao") {
+        values.produto_qtd = Math.max(1, parseInt(values.produto_qtd, 10) || 1);
+      } else {
+        delete values.produto_qtd; // quantidade só faz sentido com produto do catálogo
+      }
+      if (values.tipo_negocio && !values.tipo_negocio.startsWith("prod:") && values.tipo_negocio !== "padrao") {
         values.categoria = "software";
         values.produto_software = values.tipo_negocio;
       }
@@ -2636,11 +2641,14 @@ const MODAL_CONFIG = {
     fields: [
       { name: "titulo", label: "Título do negócio", type: "text", required: true },
       { name: "valor_estimado", label: "Valor estimado (R$)", type: "number" },
+      { name: "produto_qtd", label: "📦 Quantidade de unidades (só p/ negócio com produto do catálogo)", type: "number" },
       { name: "data_prevista_fechamento", label: "Previsão de fechamento (opcional)", type: "date" },
     ],
     prefill: async () => {
       const d = await api(`/deals/${SELECTED_EDIT_DEAL_ID}`);
-      return { titulo: d.titulo, valor_estimado: d.valor_estimado, data_prevista_fechamento: d.data_prevista_fechamento };
+      return { titulo: d.titulo, valor_estimado: d.valor_estimado,
+               produto_qtd: d.produto_id ? (d.produto_qtd || 1) : "",
+               data_prevista_fechamento: d.data_prevista_fechamento };
     },
     submit: async (values) => {
       values.valor_estimado = values.valor_estimado ? Number(values.valor_estimado) : 0;

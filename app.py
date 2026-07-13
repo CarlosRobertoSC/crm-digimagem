@@ -1053,16 +1053,17 @@ def create_deal():
         if not pr:
             return jsonify({"error": "Produto do catálogo inválido ou inativo."}), 400
         produto_id = pr["id"]
+    produto_qtd = (_int_or_none(body.get("produto_qtd")) or 1) if produto_id else None
 
     did = new_id()
     etapa_inicial = body.get("etapa_funil", "novo_lead")
     db.execute("""
         INSERT INTO deals (id, customer_id, user_id, titulo, etapa_funil, valor_estimado, status,
-                           data_prevista_fechamento, categoria, produto_software, produto_id)
-        VALUES (?,?,?,?,?,?,'aberto',?,?,?,?)
+                           data_prevista_fechamento, categoria, produto_software, produto_id, produto_qtd)
+        VALUES (?,?,?,?,?,?,'aberto',?,?,?,?,?)
     """, (did, body["customer_id"], user_id, body["titulo"],
           etapa_inicial, body.get("valor_estimado", 0), body.get("data_prevista_fechamento"),
-          categoria, produto_software, produto_id))
+          categoria, produto_software, produto_id, produto_qtd))
     # 💰 valor inicial entra no histórico (valor_anterior NULL = "inicial")
     db.execute("""
         INSERT INTO deal_value_history (id, deal_id, valor_anterior, valor_novo, user_id, created_at)
@@ -1373,10 +1374,14 @@ def update_deal(deal_id):
     titulo = body.get("titulo", existing["titulo"])
     valor = body.get("valor_estimado", existing["valor_estimado"])
     data_prevista = body.get("data_prevista_fechamento", existing["data_prevista_fechamento"])
+    produto_qtd = existing["produto_qtd"]
+    if existing["produto_id"] and "produto_qtd" in body:
+        produto_qtd = _int_or_none(body.get("produto_qtd")) or 1
     db.execute("""
-        UPDATE deals SET titulo = ?, valor_estimado = ?, data_prevista_fechamento = ?, updated_at = ?
+        UPDATE deals SET titulo = ?, valor_estimado = ?, data_prevista_fechamento = ?,
+            produto_qtd = ?, updated_at = ?
         WHERE id = ?
-    """, (titulo, valor, data_prevista, now_iso(), deal_id))
+    """, (titulo, valor, data_prevista, produto_qtd, now_iso(), deal_id))
     # 💰 mudou o valor? entra no histórico (imutável, como o resto)
     try:
         valor_num = float(valor or 0)
@@ -1982,8 +1987,10 @@ def _meta_progresso_map(db, m):
     ini, fim = _meta_janela(m)
     if m["tipo"] == "vendas":
         extra, extra_params = _meta_filtro_vendas(m)
+        # conta UNIDADES vendidas: negócio com produto soma a quantidade dele;
+        # negócio sem produto (ou software) vale 1 unidade.
         rows = db.execute(f"""
-            SELECT user_id, COUNT(*) qtd FROM deals
+            SELECT user_id, COALESCE(SUM(COALESCE(produto_qtd, 1)), 0) qtd FROM deals
             WHERE status = 'ganho' AND etapa_atualizada_em BETWEEN ? AND ?{extra}
             GROUP BY user_id
         """, [ini, fim] + extra_params).fetchall()
@@ -2658,6 +2665,7 @@ def migrate_missing_columns(conn):
             "categoria": "TEXT NOT NULL DEFAULT 'padrao'",
             "produto_software": "TEXT",
             "produto_id": "TEXT",
+            "produto_qtd": "INTEGER",
         },
         "metas": {
             "alvo_produto_id": "TEXT",
