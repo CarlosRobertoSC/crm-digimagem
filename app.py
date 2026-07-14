@@ -801,11 +801,28 @@ def list_customers():
 @login_required
 def get_customer(customer_id):
     db = get_db()
-    c = db.execute("SELECT * FROM customers WHERE id = ?", (customer_id,)).fetchone()
+    c = db.execute("""
+        SELECT c.*, u.nome as responsavel_nome FROM customers c
+        LEFT JOIN users u ON u.id = c.responsavel_id
+        WHERE c.id = ?
+    """, (customer_id,)).fetchone()
     if not c:
         return jsonify({"error": "Cliente não encontrado."}), 404
     if g.current_user["role"] != "admin" and c["responsavel_id"] != g.current_user["id"]:
         return jsonify({"error": "Sem permissão para ver este cliente."}), 403
+    # ⇄ transferências: admin vê de quem/para quem; os demais só data e admin
+    eh_admin = g.current_user["role"] == "admin"
+    transfers = [{"data": t["created_at"], "admin_nome": t["admin_nome"],
+                  "de_nome": t["de_nome"] if eh_admin else None,
+                  "para_nome": t["para_nome"] if eh_admin else None}
+                 for t in db.execute("""
+                     SELECT t.created_at, du.nome as de_nome, pu.nome as para_nome, au.nome as admin_nome
+                     FROM customer_transfers t
+                     LEFT JOIN users du ON du.id = t.de_user_id
+                     LEFT JOIN users pu ON pu.id = t.para_user_id
+                     LEFT JOIN users au ON au.id = t.admin_id
+                     WHERE t.customer_id = ? ORDER BY t.created_at DESC
+                 """, (customer_id,)).fetchall()]
     deals = db.execute("SELECT * FROM deals WHERE customer_id = ? ORDER BY created_at DESC", (customer_id,)).fetchall()
     tasks = db.execute("SELECT * FROM tasks WHERE customer_id = ? ORDER BY data_lembrete", (customer_id,)).fetchall()
     insights = db.execute("SELECT * FROM ai_insights WHERE customer_id = ? AND lido = 0 ORDER BY created_at DESC", (customer_id,)).fetchall()
@@ -816,7 +833,29 @@ def get_customer(customer_id):
         "deals": [dict(d) for d in deals],
         "tasks": [dict(t) for t in tasks],
         "insights": [dict(i) for i in insights],
+        "transfers": transfers,
     })
+
+
+def _erro_cliente_duplicado(db, cpf_cnpj, whatsapp, ignorar_id=None):
+    """Trava de duplicidade da carteira: CPF/CNPJ e WhatsApp identificam o
+    cliente no sistema inteiro. Se já existir com OUTRO dono, orienta a
+    falar com o administrador (que pode transferir a titularidade)."""
+    achado = None
+    if cpf_cnpj:
+        achado = db.execute("SELECT * FROM customers WHERE cpf_cnpj = ? AND id != ?",
+                            (cpf_cnpj, ignorar_id or "")).fetchone()
+    if not achado and whatsapp:
+        achado = db.execute("SELECT * FROM customers WHERE whatsapp_id = ? AND id != ?",
+                            (whatsapp, ignorar_id or "")).fetchone()
+    if not achado:
+        return None
+    if achado["responsavel_id"] == g.current_user["id"]:
+        return jsonify({"error": f"Você já tem este cliente na sua carteira: \"{achado['nome']}\"."}), 409
+    if g.current_user["role"] == "admin":
+        dono = db.execute("SELECT nome FROM users WHERE id = ?", (achado["responsavel_id"],)).fetchone()
+        return jsonify({"error": f"Este cliente já está cadastrado no sistema: \"{achado['nome']}\", na carteira de {dono['nome'] if dono else '?'}. Se for o caso, abra a ficha dele e use ⇄ Transferir."}), 409
+    return jsonify({"error": "Este cliente já foi cadastrado no sistema por outro usuário. Fale com o administrador sobre este cliente."}), 409
 
 
 @app.post("/api/customers")
@@ -834,6 +873,9 @@ def create_customer():
     cpf_cnpj_norm, erro_doc = validar_cpf_cnpj_ou_erro(body.get("cpf_cnpj"))
     if erro_doc:
         return jsonify({"error": erro_doc}), 400
+    erro_dup = _erro_cliente_duplicado(db, cpf_cnpj_norm, normalizar_telefone(body.get("whatsapp_id")))
+    if erro_dup:
+        return erro_dup
     recompra_dias = _int_or_none(body.get("recompra_dias"))
     db.execute("""
         INSERT INTO customers (id, nome, whatsapp_id, telefone, email, cpf_cnpj, endereco, cep,
@@ -872,6 +914,11 @@ def update_customer(customer_id):
     for _tel in ("telefone", "whatsapp_id"):
         if _tel in body:
             body[_tel] = normalizar_telefone(body.get(_tel))
+    if body.get("cpf_cnpj") or body.get("whatsapp_id"):
+        erro_dup = _erro_cliente_duplicado(get_db(), body.get("cpf_cnpj"), body.get("whatsapp_id"),
+                                           ignorar_id=customer_id)
+        if erro_dup:
+            return erro_dup
     if "rolos_mes_media" in body:
         body["rolos_mes_media"] = _int_or_none(body.get("rolos_mes_media"))
     campos = ["nome", "whatsapp_id", "telefone", "email", "cpf_cnpj", "endereco", "cep",
@@ -1234,12 +1281,49 @@ def get_deal(deal_id):
 # os de outros administradores. As notas são imutáveis (sem edição ou
 # exclusão) para o histórico ser um registro confiável do que ocorreu.
 # ------------------------------------------------------------------
-def _deal_permitido_ou_erro(deal_id):
-    """Carrega o negócio (com nomes de cliente e vendedor) e aplica a
-    regra de visibilidade. Retorna (deal, None) ou (None, resposta_erro)."""
+@app.post("/api/customers/<customer_id>/transferir")
+@login_required
+def transferir_cliente(customer_id):
+    """⇄ Transferência de titularidade (somente admin). Negócios e valores
+    do dono anterior permanecem com ele (relatórios intactos); o novo dono
+    ganha LEITURA das conversas antigas do cliente e começa negociações do
+    zero. O registro guarda quem transferiu, quando, de quem e para quem —
+    origem e destino visíveis apenas ao administrador."""
+    if g.current_user["role"] != "admin":
+        return jsonify({"error": "Apenas administradores transferem clientes."}), 403
+    db = get_db()
+    c = db.execute("SELECT * FROM customers WHERE id = ?", (customer_id,)).fetchone()
+    if not c:
+        return jsonify({"error": "Cliente não encontrado."}), 404
+    body = request.get_json(force=True, silent=True) or {}
+    novo_id = body.get("novo_responsavel_id")
+    novo = db.execute("SELECT * FROM users WHERE id = ? AND ativo = 1", (novo_id,)).fetchone()
+    if not novo:
+        return jsonify({"error": "Escolha um usuário ativo para receber o cliente."}), 400
+    if novo_id == c["responsavel_id"]:
+        return jsonify({"error": "Este usuário já é o responsável por este cliente."}), 400
+    db.execute("UPDATE customers SET responsavel_id = ? WHERE id = ?", (novo_id, customer_id))
+    db.execute("""
+        INSERT INTO customer_transfers (id, customer_id, de_user_id, para_user_id, admin_id, created_at)
+        VALUES (?,?,?,?,?,?)
+    """, (new_id(), customer_id, c["responsavel_id"], novo_id, g.current_user["id"], now_iso()))
+    abertos = db.execute("SELECT COUNT(*) n FROM deals WHERE customer_id = ? AND status = 'aberto'",
+                         (customer_id,)).fetchone()["n"]
+    audit("update", "customers", customer_id, {"acao": "transferir", "para": novo_id})
+    db.commit()
+    return jsonify({"ok": True, "negocios_abertos": abertos})
+
+
+def _deal_permitido_ou_erro(deal_id, escrita=False):
+    """Carrega o negócio e aplica a regra de visibilidade:
+    - admin: tudo;
+    - dono do NEGÓCIO: lê e escreve;
+    - dono ATUAL do CLIENTE (ex.: recebeu por transferência ⇄): apenas LÊ o
+      histórico das negociações antigas — a "cópia" do que já foi conversado."""
     db = get_db()
     d = db.execute("""
         SELECT d.*, c.nome as cliente_nome, c.rolos_mes_media as cliente_rolos_mes,
+               c.responsavel_id as cliente_responsavel_id,
                u.nome as vendedor_nome, pr.nome as produto_nome
         FROM deals d
         JOIN customers c ON c.id = d.customer_id
@@ -1249,8 +1333,13 @@ def _deal_permitido_ou_erro(deal_id):
     """, (deal_id,)).fetchone()
     if not d:
         return None, (jsonify({"error": "Negócio não encontrado."}), 404)
-    if g.current_user["role"] != "admin" and d["user_id"] != g.current_user["id"]:
-        return None, (jsonify({"error": "Sem permissão para acessar o histórico deste negócio."}), 403)
+    if g.current_user["role"] != "admin":
+        dono_negocio = d["user_id"] == g.current_user["id"]
+        dono_cliente = d["cliente_responsavel_id"] == g.current_user["id"]
+        if escrita and not dono_negocio:
+            return None, (jsonify({"error": "Somente o vendedor deste negócio (ou um administrador) pode escrever no histórico."}), 403)
+        if not (dono_negocio or dono_cliente):
+            return None, (jsonify({"error": "Sem permissão para acessar o histórico deste negócio."}), 403)
     return d, None
 
 
@@ -1276,6 +1365,15 @@ def deal_historico(deal_id):
         LEFT JOIN users u ON u.id = v.user_id
         WHERE v.deal_id = ?
     """, (deal_id,)).fetchall()
+    transfers = db.execute("""
+        SELECT t.created_at, du.nome as de_nome, pu.nome as para_nome, au.nome as admin_nome
+        FROM customer_transfers t
+        LEFT JOIN users du ON du.id = t.de_user_id
+        LEFT JOIN users pu ON pu.id = t.para_user_id
+        LEFT JOIN users au ON au.id = t.admin_id
+        WHERE t.customer_id = ?
+    """, (d["customer_id"],)).fetchall()
+    eh_admin = g.current_user["role"] == "admin"
     eventos = (
         [{"tipo": "nota", "id": n["id"], "conteudo": n["conteudo"], "etapa_funil": n["etapa_funil"],
           "autor_nome": n["autor_nome"], "autor_id": n["user_id"], "autor_role": n["autor_role"],
@@ -1288,6 +1386,10 @@ def deal_historico(deal_id):
         + [{"tipo": "valor", "valor_anterior": v["valor_anterior"], "valor_novo": v["valor_novo"],
             "autor_nome": v["autor_nome"], "data": v["created_at"]}
            for v in valores]
+        + [{"tipo": "transferencia", "data": t["created_at"], "admin_nome": t["admin_nome"],
+            "de_nome": t["de_nome"] if eh_admin else None,
+            "para_nome": t["para_nome"] if eh_admin else None}
+           for t in transfers]
     )
     eventos.sort(key=lambda ev: (ev["data"], 0 if ev["tipo"] == "etapa" else 1))
     return jsonify({"deal": dict(d), "eventos": eventos})
@@ -1296,7 +1398,7 @@ def deal_historico(deal_id):
 @app.post("/api/deals/<deal_id>/notas")
 @login_required
 def add_deal_nota(deal_id):
-    d, erro = _deal_permitido_ou_erro(deal_id)
+    d, erro = _deal_permitido_ou_erro(deal_id, escrita=True)
     if erro:
         return erro
     body = request.get_json(force=True, silent=True) or {}

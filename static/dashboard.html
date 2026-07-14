@@ -473,6 +473,12 @@
     .cliente-avatar{width:36px;height:36px;}
     .modal-actions{flex-direction:column-reverse;}
   }
+  /* 📱 telas pequenas (tablet/celular): tabelas ganham rolagem horizontal */
+  @media (max-width: 760px){
+    .report-table{display:block;overflow-x:auto;-webkit-overflow-scrolling:touch;}
+    .meta-top{flex-direction:column;align-items:flex-start;gap:6px;}
+    .phone-field{flex-wrap:wrap;}
+  }
 </style>
 </head>
 <body>
@@ -1311,6 +1317,7 @@ async function showCustomer(customerId) {
     <div class="panel-head">
       <div class="panel-title">◍ Visão do Cliente</div>
       <div style="display:flex;gap:6px;">
+        ${CURRENT_USER.role === "admin" ? `<button class="btn-mini" onclick="openModal('transferir_cliente')">⇄ Transferir</button>` : ""}
         <button class="btn-mini" onclick="openModal('editar_cliente')">Editar</button>
         <button class="btn-mini" onclick="toggleClienteAtivo('${c.id}', ${c.ativo ? "false" : "true"}).then(()=>showCustomer('${c.id}'))">${c.ativo ? "Desativar" : "Reativar"}</button>
         <button class="btn-mini" onclick="excluirCliente('${c.id}', ${jsArg(c.nome)})">Excluir</button>
@@ -1323,6 +1330,8 @@ async function showCustomer(customerId) {
         <div class="cliente-status">● ${esc(c.status_fidelidade)}</div>
       </div>
     </div>
+    ${CURRENT_USER.role === "admin" && c.responsavel_nome ? `<div class="kv-row"><span>👤 Responsável</span><span>${esc(c.responsavel_nome)}</span></div>` : ""}
+    ${(data.transfers || []).map(t => `<div class="kv-row"><span>⇄ Transferência</span><span style="text-align:right;">${fmtDataHist(t.data)} · por ${esc(t.admin_nome || "administração")}${t.de_nome ? `<br><span style="color:var(--text-muted);font-size:10.5px;">de ${esc(t.de_nome)} → para ${esc(t.para_nome)}</span>` : ""}</span></div>`).join("")}
     <div class="kv-row"><span>Última compra</span><span>${diasSemComprar !== null ? diasSemComprar + " dias atrás" : "sem registro"}</span></div>
     <div class="kv-row"><span>Negócios ativos</span><span>${data.deals.filter(d=>d.status==='aberto').length}</span></div>
     ${c.cpf_cnpj ? `<div class="kv-row"><span>CPF/CNPJ</span><span>${esc(fmtCpfCnpj(c.cpf_cnpj))}</span></div>` : ""}
@@ -2413,6 +2422,16 @@ async function renderHistorico() {
   }
   box.innerHTML = data.eventos.map(ev => {
     const quando = fmtDataHist(ev.data);
+    if (ev.tipo === "transferencia") {
+      return `
+        <div class="hist-event etapa">
+          <div class="hist-dot">⇄</div>
+          <div class="hist-etapa-label">${ev.de_nome
+            ? `Cliente transferido de <b>${esc(ev.de_nome)}</b> para <b>${esc(ev.para_nome)}</b>`
+            : `Cliente transferido pela administração`}</div>
+          <div class="hist-meta">${quando} · por ${esc(ev.admin_nome || "administração")}</div>
+        </div>`;
+    }
     if (ev.tipo === "valor") {
       const fmtV = v => "R$ " + Number(v || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
       const inicial = ev.valor_anterior === null || ev.valor_anterior === undefined;
@@ -2849,6 +2868,19 @@ const MODAL_CONFIG = {
       refreshAll();
     },
   },
+  transferir_cliente: {
+    title: "⇄ Transferir cliente de carteira",
+    fields: [
+      { name: "novo_responsavel_id", label: "Novo responsável — o cliente sai da carteira atual; negócios e valores antigos permanecem com o vendedor anterior para fins de relatório; o novo responsável poderá LER as conversas anteriores e seguirá o atendimento do zero", type: "select", options: [["", "—"]] },
+    ],
+    submit: async (values) => api(`/customers/${SELECTED_CUSTOMER_ID}/transferir`, {
+      method: "POST", body: JSON.stringify(values),
+    }),
+    onSuccess: async () => {
+      showCustomer(SELECTED_CUSTOMER_ID);
+      refreshAll();
+    },
+  },
   meta_progresso: {
     title: "Registrar progresso na meta (+1)",
     fields: [
@@ -2866,7 +2898,7 @@ const MODAL_CONFIG = {
 
 let ACTIVE_MODAL = null;
 
-const ADMIN_ONLY_MODALS = ["usuario", "editar_usuario", "delegada", "meta", "editar_meta"];
+const ADMIN_ONLY_MODALS = ["usuario", "editar_usuario", "delegada", "meta", "editar_meta", "transferir_cliente"];
 
 // ------------------------------------------------------------------
 // Busca automática de CNPJ (Receita Federal via BrasilAPI) e CEP (ViaCEP)
@@ -2978,6 +3010,13 @@ async function openModal(kind) {
     const opsProdutos = PRODUTOS_CACHE.filter(p => p.ativo).map(p => [`prod:${p.id}`, `📦 ${p.nome}`]);
     fields = cfg.fields.map(f => f.name === "tipo_negocio"
       ? { ...f, options: [f.options[0], ...opsProdutos, ...f.options.slice(1)] }
+      : f);
+  }
+  if (kind === "transferir_cliente") {
+    const usuarios = await api("/users");
+    fields = cfg.fields.map(f => f.name === "novo_responsavel_id"
+      ? { ...f, options: [["", "— escolha o novo responsável —"],
+          ...usuarios.filter(u => u.ativo).map(u => [u.id, u.nome + (u.role === "admin" ? " (admin)" : "")])] }
       : f);
   }
   if (kind === "meta" || kind === "editar_meta") {

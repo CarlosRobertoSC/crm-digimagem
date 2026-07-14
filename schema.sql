@@ -165,6 +165,18 @@ CREATE TABLE IF NOT EXISTS produtos (
     criado_por TEXT REFERENCES users(id),
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- ⇄ Transferências de titularidade de clientes (auditoria completa)
+CREATE TABLE IF NOT EXISTS customer_transfers (
+    id           TEXT PRIMARY KEY,
+    customer_id  TEXT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+    de_user_id   TEXT REFERENCES users(id),
+    para_user_id TEXT NOT NULL REFERENCES users(id),
+    admin_id     TEXT NOT NULL REFERENCES users(id),
+    created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_transfers_customer ON customer_transfers(customer_id);
 CREATE INDEX IF NOT EXISTS idx_deal_notes_user ON deal_notes(user_id);
 CREATE INDEX IF NOT EXISTS idx_stage_history_data ON deal_stage_history(data_transicao);
 CREATE INDEX IF NOT EXISTS idx_stage_history_etapa_nova ON deal_stage_history(etapa_nova);
