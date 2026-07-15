@@ -2160,7 +2160,9 @@ function renderProdutos() {
   box.innerHTML = PRODUTOS_CACHE.map(p => `
     <span class="check-chip" style="${p.ativo ? "" : "opacity:.45;"}" title="criado por ${esc(p.criado_por_nome || "?")}">
       📦 ${esc(p.nome)}
-      <button onclick="toggleProduto('${esc(p.id)}')" style="background:none;border:none;cursor:pointer;color:${p.ativo ? "var(--urgent)" : "#1fbf63"};font-size:10px;padding:0 0 0 4px;" title="${p.ativo ? "Desativar (some das opções; nada existente é afetado)" : "Reativar"}">${p.ativo ? "desativar" : "reativar"}</button>
+      <button onclick="editarProduto('${esc(p.id)}')" style="background:none;border:none;cursor:pointer;color:var(--text-muted);font-size:11px;padding:0 0 0 6px;" title="Editar o nome do produto">✎</button>
+      <button onclick="excluirProduto('${esc(p.id)}')" style="background:none;border:none;cursor:pointer;color:var(--text-muted);font-size:11px;padding:0 2px;" title="Excluir (só se nunca foi usado em negócio ou meta)">🗑</button>
+      <button onclick="toggleProduto('${esc(p.id)}')" style="background:none;border:none;cursor:pointer;color:${p.ativo ? "var(--urgent)" : "#1fbf63"};font-size:10px;padding:0 0 0 2px;" title="${p.ativo ? "Desativar (some das opções; nada existente é afetado)" : "Reativar"}">${p.ativo ? "desativar" : "reativar"}</button>
     </span>`).join("");
 }
 
@@ -2182,6 +2184,25 @@ async function toggleProduto(id) {
     await carregarProdutos();
     renderProdutos();
   } catch (e) { alert(e.message || "Erro ao alterar o produto."); }
+}
+
+let SELECTED_PRODUTO = null;
+
+function editarProduto(id) {
+  SELECTED_PRODUTO = PRODUTOS_CACHE.find(p => p.id === id);
+  if (!SELECTED_PRODUTO) return;
+  openModal("editar_produto");
+}
+
+async function excluirProduto(id) {
+  const p = PRODUTOS_CACHE.find(x => x.id === id);
+  if (!p) return;
+  if (!confirm(`Excluir o produto "${p.nome}" do catálogo?\n\nSó é possível se ele nunca foi usado em negócios ou metas.`)) return;
+  try {
+    await api(`/produtos/${id}`, { method: "DELETE" });
+    await carregarProdutos();
+    renderProdutos();
+  } catch (e) { alert(e.message || "Erro ao excluir o produto."); }
 }
 
 function prazoMetaLabel(m) {
@@ -2870,6 +2891,19 @@ const MODAL_CONFIG = {
       refreshAll();
     },
   },
+  editar_produto: {
+    title: "✎ Editar produto do catálogo",
+    fields: [
+      { name: "nome", label: "Nome do produto (reflete na hora em negócios, metas e no Tipo de negócio)", type: "text", required: true },
+    ],
+    prefill: async () => ({ nome: (SELECTED_PRODUTO || {}).nome || "" }),
+    submit: async (values) => api(`/produtos/${SELECTED_PRODUTO.id}`, { method: "PUT", body: JSON.stringify(values) }),
+    onSuccess: async () => {
+      await carregarProdutos();
+      renderProdutos();
+      if (CURRENT_VIEW === "metas") loadMetasView();
+    },
+  },
   transferir_cliente: {
     title: "⇄ Transferir cliente de carteira",
     fields: [
@@ -2900,7 +2934,7 @@ const MODAL_CONFIG = {
 
 let ACTIVE_MODAL = null;
 
-const ADMIN_ONLY_MODALS = ["usuario", "editar_usuario", "delegada", "meta", "editar_meta", "transferir_cliente"];
+const ADMIN_ONLY_MODALS = ["usuario", "editar_usuario", "delegada", "meta", "editar_meta", "transferir_cliente", "editar_produto"];
 
 // ------------------------------------------------------------------
 // Busca automática de CNPJ (Receita Federal via BrasilAPI) e CEP (ViaCEP)

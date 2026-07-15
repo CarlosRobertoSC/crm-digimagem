@@ -2034,6 +2034,55 @@ def toggle_produto(produto_id):
     return jsonify({"ok": True, "ativo": bool(novo)})
 
 
+@app.put("/api/produtos/<produto_id>")
+@login_required
+def update_produto(produto_id):
+    """Renomeia um produto do catálogo (admin). Como negócios e metas
+    referenciam o produto por id, o nome novo reflete em tudo na hora."""
+    if g.current_user["role"] != "admin":
+        return jsonify({"error": "Apenas administradores alteram o catálogo."}), 403
+    db = get_db()
+    p = db.execute("SELECT * FROM produtos WHERE id = ?", (produto_id,)).fetchone()
+    if not p:
+        return jsonify({"error": "Produto não encontrado."}), 404
+    body = request.get_json(force=True, silent=True) or {}
+    nome = (body.get("nome") or "").strip()
+    if not nome:
+        return jsonify({"error": "Informe o novo nome do produto."}), 400
+    if len(nome) > 120:
+        return jsonify({"error": "Nome do produto longo demais (máximo 120 caracteres)."}), 400
+    duplicado = db.execute("SELECT id FROM produtos WHERE lower(nome) = lower(?) AND id != ?",
+                           (nome, produto_id)).fetchone()
+    if duplicado:
+        return jsonify({"error": "Já existe outro produto com esse nome no catálogo."}), 400
+    db.execute("UPDATE produtos SET nome = ? WHERE id = ?", (nome, produto_id))
+    audit("update", "produtos", produto_id, {"nome": nome})
+    db.commit()
+    return jsonify({"ok": True})
+
+
+@app.delete("/api/produtos/<produto_id>")
+@login_required
+def delete_produto(produto_id):
+    """Exclui um produto do catálogo (admin) — SOMENTE se nunca foi usado.
+    Produto referenciado por negócios ou metas não pode ser apagado, para
+    não corromper históricos e relatórios; o caminho para esses é Desativar."""
+    if g.current_user["role"] != "admin":
+        return jsonify({"error": "Apenas administradores alteram o catálogo."}), 403
+    db = get_db()
+    p = db.execute("SELECT * FROM produtos WHERE id = ?", (produto_id,)).fetchone()
+    if not p:
+        return jsonify({"error": "Produto não encontrado."}), 404
+    em_negocios = db.execute("SELECT COUNT(*) n FROM deals WHERE produto_id = ?", (produto_id,)).fetchone()["n"]
+    em_metas = db.execute("SELECT COUNT(*) n FROM metas WHERE alvo_produto_id = ?", (produto_id,)).fetchone()["n"]
+    if em_negocios or em_metas:
+        return jsonify({"error": f"Este produto já foi usado em {em_negocios} negócio(s) e {em_metas} meta(s) — para preservar o histórico, ele não pode ser excluído. Use \"desativar\": ele some das opções sem afetar nada do passado."}), 400
+    db.execute("DELETE FROM produtos WHERE id = ?", (produto_id,))
+    audit("delete", "produtos", produto_id, {"nome": p["nome"]})
+    db.commit()
+    return jsonify({"ok": True})
+
+
 # ------------------------------------------------------------------
 # 🎯 METAS configuráveis
 # - tipo 'vendas': o progresso conta SOZINHO pelos negócios GANHOS na janela
