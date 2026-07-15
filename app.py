@@ -309,6 +309,7 @@ EQUIPAMENTOS = {
     "dx100": "Frontier DX100", "de100": "Frontier DE100",
     "de100xd": "Frontier DE100-XD", "dx400": "Frontier Smartlab DX400",
     "minilab": "Minilab (química)",
+    "instax": "Instax (câmeras e filmes)",
 }
 EQUIPAMENTOS_COMPATIVEIS_SOFTWARE = ("ask300", "ask400", "dx100", "de100", "de100xd", "dx400")
 

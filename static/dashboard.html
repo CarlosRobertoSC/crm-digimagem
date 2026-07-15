@@ -606,6 +606,7 @@
               <option value="de100xd">Frontier DE100-XD</option>
               <option value="dx400">Frontier Smartlab DX400</option>
               <option value="minilab">Minilab (química)</option>
+              <option value="instax">Instax (câmeras e filmes)</option>
             </select>
             <label style="display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--text-muted);font-family:var(--font-mono);cursor:pointer;">
               <input type="checkbox" id="toggleInativos" onchange="loadClientesView()"> mostrar inativos
@@ -1684,6 +1685,7 @@ const EQUIP_LABEL = {
   ask300: "ASK-300", ask400: "ASK-400", dx100: "Frontier DX100",
   de100: "Frontier DE100", de100xd: "Frontier DE100-XD",
   dx400: "Frontier Smartlab DX400", minilab: "Minilab (química)",
+  instax: "Instax (câmeras e filmes)",
 };
 const EQUIP_OPTIONS = Object.entries(EQUIP_LABEL);
 
@@ -2576,7 +2578,7 @@ const MODAL_CONFIG = {
       { name: "cep", label: "CEP", type: "text" },
       { name: "cidade", label: "Cidade", type: "text" },
       { name: "estado", label: "Estado (UF)", type: "select", options: UF_OPTIONS },
-      { name: "equipamentos", label: "🖨 Equipamentos do cliente (impressoras Fujifilm)", type: "checkboxes", options: EQUIP_OPTIONS },
+      { name: "equipamentos", label: "🖨 Equipamentos e linhas do cliente (impressoras Fujifilm e Instax)", type: "checkboxes", options: EQUIP_OPTIONS },
       { name: "rolos_mes_media", label: "📦 Média mensal de rolos de papel (define a faixa de preço por rolo)", type: "number" },
       { name: "recompra_dias", label: "🔁 Recompra programada — contatar a cada N dias (vazio = desativado)", type: "number" },
       { name: "data_ultima_compra", label: "Última compra (opcional)", type: "date" },
@@ -2607,7 +2609,7 @@ const MODAL_CONFIG = {
       { name: "cep", label: "CEP", type: "text" },
       { name: "cidade", label: "Cidade", type: "text" },
       { name: "estado", label: "Estado (UF)", type: "select", options: UF_OPTIONS },
-      { name: "equipamentos", label: "🖨 Equipamentos do cliente (impressoras Fujifilm)", type: "checkboxes", options: EQUIP_OPTIONS },
+      { name: "equipamentos", label: "🖨 Equipamentos e linhas do cliente (impressoras Fujifilm e Instax)", type: "checkboxes", options: EQUIP_OPTIONS },
       { name: "rolos_mes_media", label: "📦 Média mensal de rolos de papel (define a faixa de preço por rolo)", type: "number" },
       { name: "recompra_dias", label: "🔁 Recompra programada — contatar a cada N dias (vazio = desativado)", type: "number" },
       { name: "data_ultima_compra", label: "Última compra (opcional)", type: "date" },
