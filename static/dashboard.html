@@ -1942,6 +1942,54 @@ function barRow(label, valor, valorMax, valorFormatado) {
     </div>`;
 }
 
+const ETAPA_DIAS_ALERTA = 14; // a partir daqui, "parado" fica vermelho
+
+async function detalheNegociosHtml(tipo, periodo) {
+  const url = tipo === "abertos"
+    ? `/reports/detalhes?tipo=abertos${reportScopeParams()}`
+    : `/reports/detalhes?tipo=${tipo}&${periodo}${reportScopeParams()}`;
+  const data = await api(url);
+  const negocios = data.negocios || [];
+  const titulos = {
+    ganhos: "📋 Vendas ganhas no período — negócio a negócio",
+    perdidos: "📋 Negócios perdidos no período — um a um, com o motivo",
+    abertos: "📋 Negócios em aberto agora — os mais parados primeiro",
+  };
+  if (!negocios.length) {
+    return `<div class="tarefas-section-title" style="margin-top:18px;">${titulos[tipo]}</div>
+      <div class="placeholder-panel">Nenhum negócio para listar aqui.</div>`;
+  }
+  const admin = data.admin;
+  const linhas = negocios.map(n => {
+    const dataRef = fmtDataHist(tipo === "abertos" ? n.created_at : n.etapa_atualizada_em);
+    const produto = n.produto_nome
+      ? `<br><span style="color:var(--text-muted);font-size:10.5px;">📦 ${esc(n.produto_nome)}${(n.produto_qtd || 1) > 1 ? ` ×${n.produto_qtd}` : ""}</span>`
+      : (n.categoria === "software" ? `<br><span style="color:var(--text-muted);font-size:10.5px;">🎞 software</span>` : "");
+    const extra = tipo === "perdidos"
+      ? `<td>${esc(n.motivo_label || "Não informado")}${n.motivo_perda_detalhe ? `<br><span style="color:var(--text-muted);font-size:10.5px;">${esc(n.motivo_perda_detalhe)}</span>` : ""}</td>`
+      : (tipo === "abertos"
+        ? `<td>${esc(ETAPA_LABEL[n.etapa_funil] || n.etapa_funil)}<br><span style="color:${n.dias_na_etapa >= ETAPA_DIAS_ALERTA ? "var(--urgent)" : "var(--text-muted)"};font-size:10.5px;">${n.dias_na_etapa} dia(s) parado na etapa · ${n.dias_vida} de vida</span></td>`
+        : "");
+    return `<tr>
+      <td style="white-space:nowrap;">${dataRef}</td>
+      <td>${esc(n.cliente_nome)}</td>
+      ${admin ? `<td>${esc(n.vendedor_nome || "?")}</td>` : ""}
+      <td>${esc(n.titulo)}${produto}</td>
+      <td style="white-space:nowrap;">R$ ${Number(n.valor_estimado).toLocaleString("pt-BR")}</td>
+      ${extra}
+      <td><button class="btn-mini" onclick="openHistorico('${esc(n.id)}')" title="Abrir o histórico completo desta negociação">💬</button></td>
+    </tr>`;
+  }).join("");
+  const extraTh = tipo === "perdidos" ? "<th>Motivo da perda</th>"
+    : (tipo === "abertos" ? "<th>Etapa · tempo</th>" : "");
+  return `
+    <div class="tarefas-section-title" style="margin-top:18px;">${titulos[tipo]}</div>
+    <table class="report-table">
+      <thead><tr><th>${tipo === "abertos" ? "Criado em" : "Data"}</th><th>Cliente</th>${admin ? "<th>Vendedor</th>" : ""}<th>Negócio</th><th>Valor</th>${extraTh}<th>💬</th></tr></thead>
+      <tbody>${linhas}</tbody>
+    </table>`;
+}
+
 async function renderReportPipeline(content, periodo) {
   const campoData = content.dataset.pipelineCampo || "";
   const qs = campoData ? `campo_data=${campoData}&${periodo || ""}` : "";
@@ -1961,6 +2009,7 @@ async function renderReportPipeline(content, periodo) {
       `R$ ${Number(e.valor_total).toLocaleString("pt-BR")} · ${e.quantidade} negóc.`
     )).join("")}
   `;
+  content.insertAdjacentHTML("beforeend", await detalheNegociosHtml("abertos", periodo));
   document.getElementById("pipelineCampoSelect").addEventListener("change", (e) => {
     content.dataset.pipelineCampo = e.target.value;
     loadRelatoriosView();
@@ -1991,6 +2040,7 @@ async function renderReportDesempenho(content, periodo) {
       </tbody>
     </table>
   `;
+  content.insertAdjacentHTML("beforeend", await detalheNegociosHtml("ganhos", periodo));
 }
 
 async function renderReportPerdas(content, periodo) {
@@ -2007,6 +2057,7 @@ async function renderReportPerdas(content, periodo) {
       `${m.quantidade} (${m.percentual}%) · R$ ${Number(m.valor_total).toLocaleString("pt-BR")}`
     )).join("")}
   `;
+  content.insertAdjacentHTML("beforeend", await detalheNegociosHtml("perdidos", periodo));
 }
 
 async function renderReportAtividades(content, periodo) {

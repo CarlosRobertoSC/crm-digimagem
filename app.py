@@ -2581,6 +2581,65 @@ def report_motivos_perda():
     return jsonify({"periodo": {"inicio": inicio, "fim": fim}, "total_perdidos": total_perdidos, "motivos": resultado})
 
 
+@app.get("/api/reports/detalhes")
+@login_required
+def report_detalhes():
+    """Drill-down dos relatórios: a lista de negócios por trás dos números.
+    tipo=ganhos|perdidos (dentro do período) ou abertos (retrato de agora,
+    ordenado do mais parado para o mais recente, com idade e dias na etapa).
+    RBAC: vendedor só vê os próprios; admin usa ?scope=all ou ?vendedor_id=."""
+    db = get_db()
+    tipo = request.args.get("tipo")
+    if tipo not in ("ganhos", "perdidos", "abertos"):
+        return jsonify({"error": "Informe tipo=ganhos, perdidos ou abertos."}), 400
+    clause, params = report_scope_clause("d.user_id")
+    base = """
+        SELECT d.id, d.titulo, d.valor_estimado, d.etapa_funil, d.status, d.categoria,
+               d.motivo_perda, d.motivo_perda_detalhe, d.created_at, d.etapa_atualizada_em,
+               d.produto_qtd, c.nome as cliente_nome, u.nome as vendedor_nome,
+               pr.nome as produto_nome
+        FROM deals d
+        JOIN customers c ON c.id = d.customer_id
+        LEFT JOIN users u ON u.id = d.user_id
+        LEFT JOIN produtos pr ON pr.id = d.produto_id
+    """
+    if tipo == "abertos":
+        rows = db.execute(base + f" WHERE d.status = 'aberto' {clause} ORDER BY d.etapa_atualizada_em ASC",
+                          params).fetchall()
+    else:
+        try:
+            inicio, fim = parse_period_from_request()
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        if not inicio:
+            return jsonify({"error": "Informe o parâmetro 'periodo' para este relatório."}), 400
+        status = "ganho" if tipo == "ganhos" else "perdido"
+        rows = db.execute(base + f" WHERE d.status = ? AND d.etapa_atualizada_em BETWEEN ? AND ? {clause}"
+                                 " ORDER BY d.etapa_atualizada_em DESC",
+                          [status, inicio, fim + " 23:59:59"] + params).fetchall()
+
+    agora = datetime.now(timezone.utc)
+
+    def _dias(ts):
+        if not ts:
+            return None
+        try:
+            dt = datetime.fromisoformat(str(ts).replace("Z", "")).replace(tzinfo=timezone.utc)
+            return max(0, (agora - dt).days)
+        except Exception:
+            return None
+
+    saida = []
+    for r in rows:
+        item = dict(r)
+        item["motivo_label"] = (MOTIVO_PERDA_LABEL.get(r["motivo_perda"], "Não informado")
+                                if r["status"] == "perdido" else None)
+        item["dias_na_etapa"] = _dias(r["etapa_atualizada_em"])
+        item["dias_vida"] = _dias(r["created_at"])
+        saida.append(item)
+    return jsonify({"negocios": saida, "admin": g.current_user["role"] == "admin"})
+
+
 @app.get("/api/reports/atividades")
 @login_required
 def report_atividades():
