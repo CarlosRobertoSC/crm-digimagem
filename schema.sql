@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS customers (
     id                  TEXT PRIMARY KEY,
     nome                TEXT NOT NULL,
-    whatsapp_id         TEXT UNIQUE,
+    whatsapp_id         TEXT,  -- identifica a PESSOA (pode ter várias empresas)
     telefone            TEXT,
     email               TEXT,
     cpf_cnpj            TEXT,

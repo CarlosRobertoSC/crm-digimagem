@@ -824,6 +824,14 @@ def get_customer(customer_id):
                      LEFT JOIN users au ON au.id = t.admin_id
                      WHERE t.customer_id = ? ORDER BY t.created_at DESC
                  """, (customer_id,)).fetchall()]
+    whatsapp_compartilhado = []
+    if eh_admin and c["whatsapp_id"]:
+        whatsapp_compartilhado = [{"nome": x["nome"], "responsavel_nome": x["responsavel_nome"]}
+                                  for x in db.execute("""
+                                      SELECT c2.nome, u2.nome as responsavel_nome
+                                      FROM customers c2 LEFT JOIN users u2 ON u2.id = c2.responsavel_id
+                                      WHERE c2.whatsapp_id = ? AND c2.id != ?
+                                  """, (c["whatsapp_id"], customer_id)).fetchall()]
     deals = db.execute("SELECT * FROM deals WHERE customer_id = ? ORDER BY created_at DESC", (customer_id,)).fetchall()
     tasks = db.execute("SELECT * FROM tasks WHERE customer_id = ? ORDER BY data_lembrete", (customer_id,)).fetchall()
     insights = db.execute("SELECT * FROM ai_insights WHERE customer_id = ? AND lido = 0 ORDER BY created_at DESC", (customer_id,)).fetchall()
@@ -835,28 +843,40 @@ def get_customer(customer_id):
         "tasks": [dict(t) for t in tasks],
         "insights": [dict(i) for i in insights],
         "transfers": transfers,
+        "whatsapp_compartilhado": whatsapp_compartilhado,
     })
 
 
 def _erro_cliente_duplicado(db, cpf_cnpj, whatsapp, ignorar_id=None):
-    """Trava de duplicidade da carteira: CPF/CNPJ e WhatsApp identificam o
-    cliente no sistema inteiro. Se já existir com OUTRO dono, orienta a
-    falar com o administrador (que pode transferir a titularidade)."""
-    achado = None
+    """Trava de duplicidade da carteira, com semânticas diferentes:
+    - CPF/CNPJ identifica a EMPRESA: repetido é duplicata real — bloqueia
+      sempre (na própria carteira ou na alheia).
+    - WhatsApp identifica a PESSOA, que pode ter várias empresas: repetido
+      na PRÓPRIA carteira é permitido (2ª empresa do mesmo cliente);
+      bloqueia apenas se o número existir EXCLUSIVAMENTE em carteira de
+      outro usuário — aí o caminho é falar com o administrador."""
+    uid = g.current_user["id"]
+
+    def _bloqueio(achado):
+        if achado["responsavel_id"] == uid:
+            return jsonify({"error": f"Você já tem este cliente na sua carteira: \"{achado['nome']}\"."}), 409
+        if g.current_user["role"] == "admin":
+            dono = db.execute("SELECT nome FROM users WHERE id = ?", (achado["responsavel_id"],)).fetchone()
+            return jsonify({"error": f"Este cliente já está cadastrado no sistema: \"{achado['nome']}\", na carteira de {dono['nome'] if dono else '?'}. Se for o caso, abra a ficha dele e use ⇄ Transferir."}), 409
+        return jsonify({"error": "Este cliente já foi cadastrado no sistema por outro usuário. Fale com o administrador sobre este cliente."}), 409
+
     if cpf_cnpj:
         achado = db.execute("SELECT * FROM customers WHERE cpf_cnpj = ? AND id != ?",
                             (cpf_cnpj, ignorar_id or "")).fetchone()
-    if not achado and whatsapp:
-        achado = db.execute("SELECT * FROM customers WHERE whatsapp_id = ? AND id != ?",
-                            (whatsapp, ignorar_id or "")).fetchone()
-    if not achado:
-        return None
-    if achado["responsavel_id"] == g.current_user["id"]:
-        return jsonify({"error": f"Você já tem este cliente na sua carteira: \"{achado['nome']}\"."}), 409
-    if g.current_user["role"] == "admin":
-        dono = db.execute("SELECT nome FROM users WHERE id = ?", (achado["responsavel_id"],)).fetchone()
-        return jsonify({"error": f"Este cliente já está cadastrado no sistema: \"{achado['nome']}\", na carteira de {dono['nome'] if dono else '?'}. Se for o caso, abra a ficha dele e use ⇄ Transferir."}), 409
-    return jsonify({"error": "Este cliente já foi cadastrado no sistema por outro usuário. Fale com o administrador sobre este cliente."}), 409
+        if achado:
+            return _bloqueio(achado)
+    if whatsapp:
+        iguais = db.execute("SELECT * FROM customers WHERE whatsapp_id = ? AND id != ?",
+                            (whatsapp, ignorar_id or "")).fetchall()
+        if iguais and not any(x["responsavel_id"] == uid for x in iguais):
+            # o número só existe em carteira alheia -> bloqueia
+            return _bloqueio(iguais[0])
+    return None
 
 
 @app.post("/api/customers")
@@ -2986,6 +3006,52 @@ def migrate_missing_columns(conn):
         for coluna, tipo in colunas.items():
             if coluna not in colunas_existentes:
                 conn.execute(f"ALTER TABLE {tabela} ADD COLUMN {coluna} {tipo}")
+
+    # Migração especial: remover o UNIQUE de customers.whatsapp_id em bancos
+    # antigos (a mesma pessoa pode ter várias empresas com o mesmo número).
+    # SQLite não solta constraint por ALTER: é preciso reconstruir a tabela.
+    precisa_rebuild = False
+    for idx in conn.execute("PRAGMA index_list(customers)").fetchall():
+        if idx["unique"]:
+            cols = [r["name"] for r in conn.execute(f"PRAGMA index_info({idx['name']})").fetchall()]
+            if cols == ["whatsapp_id"]:
+                precisa_rebuild = True
+    if precisa_rebuild:
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.execute("""
+            CREATE TABLE customers_nova (
+                id                  TEXT PRIMARY KEY,
+                nome                TEXT NOT NULL,
+                whatsapp_id         TEXT,
+                telefone            TEXT,
+                email               TEXT,
+                cpf_cnpj            TEXT,
+                endereco            TEXT,
+                cep                 TEXT,
+                cidade              TEXT,
+                estado              TEXT,
+                ativo               INTEGER NOT NULL DEFAULT 1,
+                data_ultima_compra  TEXT,
+                status_fidelidade   TEXT NOT NULL CHECK(status_fidelidade IN ('novo','recorrente','vip','inativo','perdido')) DEFAULT 'novo',
+                recompra_dias       INTEGER,
+                proxima_recompra    TEXT,
+                equipamentos        TEXT,
+                rolos_mes_media     INTEGER,
+                responsavel_id      TEXT REFERENCES users(id) ON DELETE SET NULL,
+                origem              TEXT,
+                observacoes         TEXT,
+                created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+        cols_novas = [r["name"] for r in conn.execute("PRAGMA table_info(customers_nova)").fetchall()]
+        cols_velhas = [r["name"] for r in conn.execute("PRAGMA table_info(customers)").fetchall()]
+        comuns = ", ".join(col for col in cols_novas if col in cols_velhas)
+        conn.execute(f"INSERT INTO customers_nova ({comuns}) SELECT {comuns} FROM customers")
+        conn.execute("DROP TABLE customers")
+        conn.execute("ALTER TABLE customers_nova RENAME TO customers")
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.commit()
 
 
 def init_db_if_needed():

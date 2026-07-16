@@ -1333,6 +1333,7 @@ async function showCustomer(customerId) {
     </div>
     ${CURRENT_USER.role === "admin" && c.responsavel_nome ? `<div class="kv-row"><span>👤 Responsável</span><span>${esc(c.responsavel_nome)}</span></div>` : ""}
     ${(data.transfers || []).map(t => `<div class="kv-row"><span>⇄ Transferência</span><span style="text-align:right;">${fmtDataHist(t.data)} · por ${esc(t.admin_nome || "administração")}${t.de_nome ? `<br><span style="color:var(--text-muted);font-size:10.5px;">de ${esc(t.de_nome)} → para ${esc(t.para_nome)}</span>` : ""}</span></div>`).join("")}
+    ${(data.whatsapp_compartilhado || []).length ? `<div class="kv-row"><span>⚠ WhatsApp compartilhado</span><span style="text-align:right;font-size:11px;">${data.whatsapp_compartilhado.map(w => `${esc(w.nome)} <span style="color:var(--text-muted);">(carteira de ${esc(w.responsavel_nome || "?")})</span>`).join("<br>")}</span></div>` : ""}
     <div class="kv-row"><span>Última compra</span><span>${diasSemComprar !== null ? `${c.data_ultima_compra.slice(0, 10).split("-").reverse().join("/")} (${diasSemComprar} dias atrás)` : "sem registro"}</span></div>
     <div class="kv-row"><span>Negócios ativos</span><span>${data.deals.filter(d=>d.status==='aberto').length}</span></div>
     ${c.cpf_cnpj ? `<div class="kv-row"><span>CPF/CNPJ</span><span>${esc(fmtCpfCnpj(c.cpf_cnpj))}</span></div>` : ""}
