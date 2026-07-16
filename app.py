@@ -879,6 +879,24 @@ def _erro_cliente_duplicado(db, cpf_cnpj, whatsapp, ignorar_id=None):
     return None
 
 
+def _ancora_recompra(data_base, dias):
+    """🔁 Próximo contato = ÚLTIMA COMPRA + ciclo (âncora comercial correta).
+    Sem última compra registrada, a âncora é hoje. Se a conta cair no passado
+    (cliente já atrasado no ciclo), a data é mantida: o motor de recompra
+    gera o contato imediatamente — que é o comportamento certo."""
+    if not dias:
+        return None
+    base = None
+    if data_base:
+        try:
+            base = datetime.strptime(str(data_base)[:10], "%Y-%m-%d")
+        except ValueError:
+            base = None
+    if base is None:
+        return _hoje_mais_dias(dias)
+    return (base + timedelta(days=dias)).strftime("%Y-%m-%d")
+
+
 @app.post("/api/customers")
 @login_required
 def create_customer():
@@ -907,7 +925,7 @@ def create_customer():
           cpf_cnpj_norm, body.get("endereco"), body.get("cep"), body.get("cidade"), body.get("estado"),
           body.get("data_ultima_compra"), body.get("status_fidelidade", "novo"),
           responsavel_id, body.get("origem"), body.get("observacoes"),
-          recompra_dias, _hoje_mais_dias(recompra_dias) if recompra_dias else None,
+          recompra_dias, _ancora_recompra(body.get("data_ultima_compra"), recompra_dias),
           normalizar_equipamentos(body.get("equipamentos")),
           _int_or_none(body.get("rolos_mes_media"))))
     audit("create", "customers", cid, body)
@@ -948,13 +966,14 @@ def update_customer(customer_id):
     valores = {c: body.get(c, existing[c]) for c in campos}
     if "ativo" in body:
         valores["ativo"] = 1 if body.get("ativo") in (1, "1", True, "true") else 0
-    if "recompra_dias" in body:
-        novo_dias = _int_or_none(body.get("recompra_dias"))
-        if novo_dias != existing["recompra_dias"]:
-            # ligar ou alterar o ciclo reprograma o contato a partir de HOJE;
-            # desligar (vazio/zero) limpa a agenda
-            db.execute("UPDATE customers SET recompra_dias = ?, proxima_recompra = ? WHERE id = ?",
-                       (novo_dias, _hoje_mais_dias(novo_dias) if novo_dias else None, customer_id))
+    dias_final = _int_or_none(body.get("recompra_dias")) if "recompra_dias" in body else existing["recompra_dias"]
+    mudou_dias = "recompra_dias" in body and dias_final != existing["recompra_dias"]
+    mudou_compra = "data_ultima_compra" in body and body.get("data_ultima_compra") != existing["data_ultima_compra"]
+    if mudou_dias or (mudou_compra and dias_final):
+        # ligar/alterar o ciclo ou corrigir a última compra reprograma o
+        # contato ancorado na ÚLTIMA COMPRA; desligar (vazio/zero) limpa
+        db.execute("UPDATE customers SET recompra_dias = ?, proxima_recompra = ? WHERE id = ?",
+                   (dias_final, _ancora_recompra(valores.get("data_ultima_compra"), dias_final), customer_id))
     db.execute(f"""
         UPDATE customers SET {", ".join(f"{c} = ?" for c in campos)}, updated_at = ?
         WHERE id = ?
