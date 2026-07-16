@@ -967,11 +967,12 @@ def update_customer(customer_id):
     if "ativo" in body:
         valores["ativo"] = 1 if body.get("ativo") in (1, "1", True, "true") else 0
     dias_final = _int_or_none(body.get("recompra_dias")) if "recompra_dias" in body else existing["recompra_dias"]
-    mudou_dias = "recompra_dias" in body and dias_final != existing["recompra_dias"]
-    mudou_compra = "data_ultima_compra" in body and body.get("data_ultima_compra") != existing["data_ultima_compra"]
-    if mudou_dias or (mudou_compra and dias_final):
-        # ligar/alterar o ciclo ou corrigir a última compra reprograma o
-        # contato ancorado na ÚLTIMA COMPRA; desligar (vazio/zero) limpa
+    if "recompra_dias" in body or "data_ultima_compra" in body:
+        # SEMPRE recalcula ao salvar a edição: próximo contato = última compra
+        # + ciclo (ou hoje + ciclo sem última compra). Como a fórmula é
+        # determinística, recalcular é idempotente — e conserta agendas
+        # gravadas erradas por versões antigas com um simples "Salvar".
+        # Desligar o ciclo (vazio/zero) limpa a agenda.
         db.execute("UPDATE customers SET recompra_dias = ?, proxima_recompra = ? WHERE id = ?",
                    (dias_final, _ancora_recompra(valores.get("data_ultima_compra"), dias_final), customer_id))
     db.execute(f"""
