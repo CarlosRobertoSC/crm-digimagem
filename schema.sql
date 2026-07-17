@@ -159,11 +159,42 @@ CREATE INDEX IF NOT EXISTS idx_meta_prog_meta ON meta_progresso(meta_id);
 
 -- 📦 Catálogo de produtos (admin gerencia): vincula negócios a metas.
 CREATE TABLE IF NOT EXISTS produtos (
-    id         TEXT PRIMARY KEY,
-    nome       TEXT NOT NULL,
-    ativo      INTEGER NOT NULL DEFAULT 1,
-    criado_por TEXT REFERENCES users(id),
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    id               TEXT PRIMARY KEY,
+    nome             TEXT NOT NULL,
+    ativo            INTEGER NOT NULL DEFAULT 1,
+    criado_por       TEXT REFERENCES users(id),
+    created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    -- 📊 Base Comercial (Fase 1)
+    seq              INTEGER,        -- nº na planilha oficial
+    categoria        TEXT,           -- ex.: Cartucho inkjet, Papel térmico
+    equipamento      TEXT,           -- linha compatível: DX100, ASK-400…
+    embalagem        TEXT,           -- rendimento/embalagem
+    preco_tabela     REAL,           -- preço oficial de oferta
+    preco_limite     REAL,           -- piso interno de negociação (sigiloso)
+    desconto_max     REAL,           -- fração (0.067 = 6,7%)
+    status_comercial TEXT,           -- validação da planilha (OK, não ofertar…)
+    ofertavel        INTEGER NOT NULL DEFAULT 1  -- 0 = fora das opções de venda
+);
+
+-- 🚚 Mínimo do pedido para frete grátis, por UF
+CREATE TABLE IF NOT EXISTS frete_uf (
+    uf            TEXT PRIMARY KEY,
+    regiao        TEXT,
+    estado        TEXT,
+    minimo        REAL NOT NULL,
+    atualizado_em TEXT
+);
+
+-- 💳 Condições de pagamento autorizadas pelo financeiro (+ notas operacionais)
+CREATE TABLE IF NOT EXISTS condicoes_pagamento (
+    id            TEXT PRIMARY KEY,
+    perfil        TEXT,
+    forma         TEXT,
+    condicao      TEXT,
+    regra         TEXT,
+    eh_nota       INTEGER NOT NULL DEFAULT 0,
+    ordem         INTEGER,
+    atualizado_em TEXT
 );
 
 -- ⇄ Transferências de titularidade de clientes (auditoria completa)

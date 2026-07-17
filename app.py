@@ -2074,6 +2074,144 @@ def toggle_produto(produto_id):
     return jsonify({"ok": True, "ativo": bool(novo)})
 
 
+def _num(v):
+    """Converte célula da planilha em número (ou None)."""
+    if v is None or v == "":
+        return None
+    try:
+        return float(str(v).replace("R$", "").replace(".", "").replace(",", ".")) \
+            if isinstance(v, str) and "," in str(v) else float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+@app.post("/api/base-comercial/importar")
+@login_required
+def importar_base_comercial():
+    """📥 Importa a planilha oficial (.xlsx) da Base Comercial (admin):
+    - Produtos: upsert por nome (atualiza preços/status; cria os novos);
+      status contendo "não ofertar" zera a flag ofertavel.
+    - Frete por UF e Condições de pagamento: recarga completa (a planilha
+      é a fonte canônica dessas regras).
+    Nunca apaga produtos: itens fora da planilha permanecem como estão."""
+    if g.current_user["role"] != "admin":
+        return jsonify({"error": "Apenas administradores importam a base comercial."}), 403
+    arquivo = request.files.get("arquivo")
+    if not arquivo or not arquivo.filename.lower().endswith(".xlsx"):
+        return jsonify({"error": "Envie o arquivo .xlsx da Base Comercial."}), 400
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(arquivo, data_only=True)
+    except Exception:
+        return jsonify({"error": "Não consegui ler o arquivo — confirme que é a planilha .xlsx original."}), 400
+
+    db = get_db()
+    agora = now_iso()
+    resumo = {"produtos_novos": 0, "produtos_atualizados": 0, "fretes": 0, "condicoes": 0, "notas": 0}
+
+    # ---------------- Produtos ----------------
+    if "Produtos" in wb.sheetnames:
+        ws = wb["Produtos"]
+        cabecalho_visto = False
+        for row in ws.iter_rows(values_only=True):
+            if not cabecalho_visto:
+                if row and str(row[0]).strip() == "ID" and "Categoria" in [str(c) for c in row if c]:
+                    cabecalho_visto = True
+                continue
+            if not row or row[0] is None or not row[3]:
+                continue
+            seq = _int_or_none(row[0])
+            categoria = (str(row[1]).strip() if row[1] else None)
+            equipamento = (str(row[2]).strip() if row[2] else None)
+            nome = str(row[3]).strip()
+            embalagem = (str(row[5]).strip() if row[5] else None)
+            preco_tabela = _num(row[6])
+            preco_limite = _num(row[7])
+            desconto_max = _num(row[8])
+            status = (str(row[9]).strip() if row[9] else "OK")
+            ofertavel = 0 if "não ofertar" in status.lower() else 1
+            existente = db.execute("SELECT id FROM produtos WHERE lower(nome) = lower(?)", (nome,)).fetchone()
+            if existente:
+                db.execute("""
+                    UPDATE produtos SET seq = ?, categoria = ?, equipamento = ?, embalagem = ?,
+                        preco_tabela = ?, preco_limite = ?, desconto_max = ?, status_comercial = ?,
+                        ofertavel = ?
+                    WHERE id = ?
+                """, (seq, categoria, equipamento, embalagem, preco_tabela, preco_limite,
+                      desconto_max, status, ofertavel, existente["id"]))
+                resumo["produtos_atualizados"] += 1
+            else:
+                db.execute("""
+                    INSERT INTO produtos (id, nome, ativo, criado_por, created_at, seq, categoria,
+                        equipamento, embalagem, preco_tabela, preco_limite, desconto_max,
+                        status_comercial, ofertavel)
+                    VALUES (?,?,1,?,?,?,?,?,?,?,?,?,?,?)
+                """, (new_id(), nome, g.current_user["id"], agora, seq, categoria, equipamento,
+                      embalagem, preco_tabela, preco_limite, desconto_max, status, ofertavel))
+                resumo["produtos_novos"] += 1
+
+    # ---------------- Frete por UF ----------------
+    if "Frete Grátis" in wb.sheetnames:
+        ws = wb["Frete Grátis"]
+        db.execute("DELETE FROM frete_uf")
+        for row in ws.iter_rows(values_only=True):
+            if not row or len(row) < 4 or not row[1]:
+                continue
+            uf = str(row[1]).strip().upper()
+            if len(uf) != 2 or uf == "UF":
+                continue
+            minimo = _num(row[3])
+            if minimo is None:
+                continue
+            db.execute("""
+                INSERT OR REPLACE INTO frete_uf (uf, regiao, estado, minimo, atualizado_em)
+                VALUES (?,?,?,?,?)
+            """, (uf, str(row[0]).strip() if row[0] else None,
+                  str(row[2]).strip() if row[2] else None, minimo, agora))
+            resumo["fretes"] += 1
+
+    # ---------------- Condições de pagamento ----------------
+    if "Pagamentos" in wb.sheetnames:
+        ws = wb["Pagamentos"]
+        db.execute("DELETE FROM condicoes_pagamento")
+        cabecalho_visto = False
+        ordem = 0
+        for row in ws.iter_rows(values_only=True):
+            if not cabecalho_visto:
+                if row and str(row[0]).strip() == "Perfil do cliente":
+                    cabecalho_visto = True
+                continue
+            if not row or not row[0]:
+                continue
+            perfil = str(row[0]).strip()
+            forma = str(row[1]).strip() if row[1] else ""
+            condicao = str(row[2]).strip() if row[2] else ""
+            regra = str(row[3]).strip() if row[3] else ""
+            eh_nota = 1 if (not condicao or perfil.lower() in ("importante", "validade", "regra confirmada")) else 0
+            ordem += 1
+            db.execute("""
+                INSERT INTO condicoes_pagamento (id, perfil, forma, condicao, regra, eh_nota, ordem, atualizado_em)
+                VALUES (?,?,?,?,?,?,?,?)
+            """, (new_id(), perfil, forma, condicao, regra, eh_nota, ordem, agora))
+            resumo["notas" if eh_nota else "condicoes"] += 1
+
+    audit("update", "base_comercial", "importacao", resumo)
+    db.commit()
+    return jsonify({"ok": True, **resumo})
+
+
+@app.get("/api/base-comercial")
+@login_required
+def consultar_base_comercial():
+    """Consulta de fretes por UF e condições de pagamento (toda a equipe —
+    são regras operacionais que o vendedor precisa saber de cor)."""
+    db = get_db()
+    fretes = [dict(r) for r in db.execute("SELECT * FROM frete_uf ORDER BY minimo, uf").fetchall()]
+    condicoes = [dict(r) for r in db.execute(
+        "SELECT * FROM condicoes_pagamento ORDER BY eh_nota, ordem").fetchall()]
+    return jsonify({"fretes": fretes, "condicoes": condicoes})
+
+
 @app.put("/api/produtos/<produto_id>")
 @login_required
 def update_produto(produto_id):
@@ -3019,6 +3157,17 @@ def migrate_missing_columns(conn):
             "editada_por": "TEXT",
             "editada_em": "TEXT",
             "escopo_users": "TEXT",
+        },
+        "produtos": {
+            "seq": "INTEGER",
+            "categoria": "TEXT",
+            "equipamento": "TEXT",
+            "embalagem": "TEXT",
+            "preco_tabela": "REAL",
+            "preco_limite": "REAL",
+            "desconto_max": "REAL",
+            "status_comercial": "TEXT",
+            "ofertavel": "INTEGER NOT NULL DEFAULT 1",
         },
     }
     for tabela, colunas in tabelas_e_colunas.items():

@@ -731,13 +731,19 @@
           <div class="panel-title">◎ Gestão de Metas <span style="font-size:11px;color:var(--text-muted);font-family:var(--font-mono);font-weight:400;">administrador</span></div>
           <button class="btn-primary" onclick="openModal('meta')">+ Nova meta</button>
         </div>
-        <div class="tarefas-section-title">📦 Catálogo de produtos <span style="font-weight:400;text-transform:none;letter-spacing:0;">— cadastre aqui os produtos que entram em metas e no "Tipo de negócio" dos vendedores</span></div>
+        <div class="tarefas-section-title">📦 Catálogo de produtos <span style="font-weight:400;text-transform:none;letter-spacing:0;">— preços, limites e disponibilidade (alimenta o "Tipo de negócio" e as metas)</span></div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:6px 0 8px;">
           <input id="novoProdutoNome" placeholder="Nome do produto — ex.: Impressora ASK-400"
-            style="background:var(--surface-raised);border:1px solid var(--border);border-radius:8px;padding:8px 12px;color:var(--text-primary);font-size:12.5px;width:320px;max-width:100%;">
+            style="background:var(--surface-raised);border:1px solid var(--border);border-radius:8px;padding:8px 12px;color:var(--text-primary);font-size:12.5px;width:280px;max-width:100%;">
           <button class="btn-mini" onclick="adicionarProduto()">+ Adicionar</button>
+          <button class="btn-mini" onclick="document.getElementById('arquivoBase').click()" title="Importa/atualiza produtos, fretes por UF e condições de pagamento da planilha oficial">📥 Importar planilha (.xlsx)</button>
+          <input type="file" id="arquivoBase" accept=".xlsx" style="display:none;" onchange="importarBaseComercial(this)">
+          <input id="buscaProduto" placeholder="🔍 Filtrar produtos…" oninput="renderProdutos()"
+            style="background:var(--surface-raised);border:1px solid var(--border);border-radius:8px;padding:8px 12px;color:var(--text-primary);font-size:12.5px;width:200px;">
         </div>
-        <div id="produtosLista" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px;"></div>
+        <div id="produtosLista" style="margin-bottom:10px;max-height:420px;overflow:auto;"></div>
+        <details style="margin-bottom:8px;"><summary style="cursor:pointer;font-size:12px;color:var(--text-muted);">🚚 Frete grátis por estado (mínimo do pedido)</summary><div id="fretesLista" style="margin-top:8px;"></div></details>
+        <details style="margin-bottom:16px;"><summary style="cursor:pointer;font-size:12px;color:var(--text-muted);">💳 Condições de pagamento autorizadas</summary><div id="condicoesLista" style="margin-top:8px;"></div></details>
         <div class="tarefas-section-title">Metas criadas</div>
         <div id="metasAdminLista"></div>
       </div>
@@ -2203,19 +2209,88 @@ async function carregarProdutos() {
     return PRODUTOS_CACHE;
 }
 
+function fmtPreco(v) {
+  return (v === null || v === undefined || v === "") ? "—"
+    : "R$ " + Number(v).toLocaleString("pt-BR", { minimumFractionDigits: 2 });
+}
+
 function renderProdutos() {
   const box = document.getElementById("produtosLista");
   if (!PRODUTOS_CACHE.length) {
-    box.innerHTML = `<span style="font-size:11.5px;color:var(--text-muted);">Nenhum produto cadastrado ainda.</span>`;
+    box.innerHTML = `<span style="font-size:11.5px;color:var(--text-muted);">Nenhum produto cadastrado ainda — cadastre acima ou use 📥 Importar planilha.</span>`;
     return;
   }
-  box.innerHTML = PRODUTOS_CACHE.map(p => `
-    <span class="check-chip" style="${p.ativo ? "" : "opacity:.45;"}" title="criado por ${esc(p.criado_por_nome || "?")}">
-      📦 ${esc(p.nome)}
-      <button onclick="editarProduto('${esc(p.id)}')" style="background:none;border:none;cursor:pointer;color:var(--text-muted);font-size:11px;padding:0 0 0 6px;" title="Editar o nome do produto">✎</button>
-      <button onclick="excluirProduto('${esc(p.id)}')" style="background:none;border:none;cursor:pointer;color:var(--text-muted);font-size:11px;padding:0 2px;" title="Excluir (só se nunca foi usado em negócio ou meta)">🗑</button>
-      <button onclick="toggleProduto('${esc(p.id)}')" style="background:none;border:none;cursor:pointer;color:${p.ativo ? "var(--urgent)" : "#1fbf63"};font-size:10px;padding:0 0 0 2px;" title="${p.ativo ? "Desativar (some das opções; nada existente é afetado)" : "Reativar"}">${p.ativo ? "desativar" : "reativar"}</button>
-    </span>`).join("");
+  const busca = (document.getElementById("buscaProduto")?.value || "").toLowerCase();
+  const lista = PRODUTOS_CACHE.filter(p =>
+    !busca || `${p.nome} ${p.categoria || ""} ${p.equipamento || ""}`.toLowerCase().includes(busca));
+  if (!lista.length) {
+    box.innerHTML = `<span style="font-size:11.5px;color:var(--text-muted);">Nenhum produto encontrado para "${esc(busca)}".</span>`;
+    return;
+  }
+  box.innerHTML = `
+    <table class="report-table">
+      <thead><tr><th>Produto</th><th>Linha</th><th>Tabela</th><th>Limite</th><th>Desc. máx</th><th>Status</th><th></th></tr></thead>
+      <tbody>
+        ${lista.map(p => {
+          const foraOferta = p.ofertavel === 0;
+          return `<tr style="${p.ativo ? "" : "opacity:.45;"}">
+            <td>📦 ${esc(p.nome)}${p.embalagem ? `<br><span style="color:var(--text-muted);font-size:10px;">${esc(p.embalagem)}</span>` : ""}</td>
+            <td style="font-size:11px;">${esc(p.equipamento || p.categoria || "—")}</td>
+            <td style="white-space:nowrap;">${fmtPreco(p.preco_tabela)}</td>
+            <td style="white-space:nowrap;color:var(--text-muted);" title="Piso interno de negociação — nunca revelar ao cliente">${fmtPreco(p.preco_limite)}</td>
+            <td>${p.desconto_max ? (p.desconto_max * 100).toFixed(1).replace(".", ",") + "%" : "—"}</td>
+            <td style="font-size:10.5px;color:${foraOferta ? "var(--urgent)" : "var(--text-muted)"};">${esc(p.status_comercial || (p.ativo ? "OK" : "inativo"))}</td>
+            <td style="white-space:nowrap;">
+              <button onclick="editarProduto('${esc(p.id)}')" style="background:none;border:none;cursor:pointer;color:var(--text-muted);font-size:12px;" title="Editar nome">✎</button>
+              <button onclick="excluirProduto('${esc(p.id)}')" style="background:none;border:none;cursor:pointer;color:var(--text-muted);font-size:12px;" title="Excluir (só se nunca usado)">🗑</button>
+              <button onclick="toggleProduto('${esc(p.id)}')" style="background:none;border:none;cursor:pointer;color:${p.ativo ? "var(--urgent)" : "#1fbf63"};font-size:10px;" title="${p.ativo ? "Desativar" : "Reativar"}">${p.ativo ? "desativar" : "reativar"}</button>
+            </td>
+          </tr>`;
+        }).join("")}
+      </tbody>
+    </table>
+    <div style="font-size:10.5px;color:var(--text-muted);margin-top:4px;">${lista.length} produto(s) · coluna "Limite" é o piso interno — sigiloso.</div>`;
+}
+
+async function importarBaseComercial(input) {
+  const arquivo = input.files[0];
+  input.value = "";
+  if (!arquivo) return;
+  if (!confirm(`Importar "${arquivo.name}"?\n\nProdutos serão atualizados/criados pelo nome; fretes por UF e condições de pagamento serão recarregados por completo.`)) return;
+  const fd = new FormData();
+  fd.append("arquivo", arquivo);
+  try {
+    const res = await fetch(API + "/base-comercial/importar", {
+      method: "POST",
+      headers: TOKEN ? { Authorization: "Bearer " + TOKEN } : {},
+      body: fd,
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Falha na importação.");
+    alert(`Importação concluída!\n\n• Produtos novos: ${data.produtos_novos}\n• Produtos atualizados: ${data.produtos_atualizados}\n• Regras de frete (UFs): ${data.fretes}\n• Condições de pagamento: ${data.condicoes} (+ ${data.notas} notas)`);
+    await carregarProdutos();
+    renderProdutos();
+    carregarBaseComercial();
+  } catch (e) {
+    alert(e.message || "Erro ao importar a planilha.");
+  }
+}
+
+async function carregarBaseComercial() {
+  try {
+    const data = await api("/base-comercial");
+    const fr = document.getElementById("fretesLista");
+    if (fr) fr.innerHTML = data.fretes.length ? `
+      <table class="report-table"><thead><tr><th>UF</th><th>Estado</th><th>Região</th><th>Mínimo p/ frete grátis</th></tr></thead>
+      <tbody>${data.fretes.map(f => `<tr><td><b>${esc(f.uf)}</b></td><td>${esc(f.estado || "")}</td><td style="font-size:11px;">${esc(f.regiao || "")}</td><td>${fmtPreco(f.minimo)}</td></tr>`).join("")}</tbody></table>`
+      : `<span style="font-size:11.5px;color:var(--text-muted);">Sem regras — use 📥 Importar planilha.</span>`;
+    const co = document.getElementById("condicoesLista");
+    if (co) co.innerHTML = data.condicoes.length ? `
+      <table class="report-table"><thead><tr><th>Perfil</th><th>Forma</th><th>Condição</th><th>Regra</th></tr></thead>
+      <tbody>${data.condicoes.filter(c => !c.eh_nota).map(c => `<tr><td style="font-size:11px;">${esc(c.perfil)}</td><td>${esc(c.forma)}</td><td>${esc(c.condicao)}</td><td style="font-size:10.5px;color:var(--text-muted);">${esc(c.regra)}</td></tr>`).join("")}</tbody></table>
+      ${data.condicoes.filter(c => c.eh_nota).map(c => `<div style="font-size:10.5px;color:var(--text-muted);margin-top:4px;">⚠ <b>${esc(c.perfil)}:</b> ${esc(c.forma)}${c.condicao ? " — " + esc(c.condicao) : ""}</div>`).join("")}`
+      : `<span style="font-size:11.5px;color:var(--text-muted);">Sem condições — use 📥 Importar planilha.</span>`;
+  } catch (e) { /* consulta é opcional; silencia */ }
 }
 
 async function adicionarProduto() {
@@ -2303,7 +2378,7 @@ async function loadMetasView() {
   const data = await api("/metas");
   const adminPanel = document.getElementById("metasAdminPanel");
   adminPanel.style.display = data.admin ? "block" : "none";
-  if (data.admin) { await carregarProdutos(); renderProdutos(); }
+  if (data.admin) { await carregarProdutos(); renderProdutos(); carregarBaseComercial(); }
   let minhas;
   if (data.admin) {
     renderMetasAdmin(data.metas);
@@ -3095,7 +3170,8 @@ async function openModal(kind) {
   if (kind === "negocio") {
     // 📦 injeta os produtos ativos do catálogo no "Tipo de negócio"
     await carregarProdutos();
-    const opsProdutos = PRODUTOS_CACHE.filter(p => p.ativo).map(p => [`prod:${p.id}`, `📦 ${p.nome}`]);
+    const opsProdutos = PRODUTOS_CACHE.filter(p => p.ativo && p.ofertavel !== 0)
+      .map(p => [`prod:${p.id}`, `📦 ${p.nome}${p.preco_tabela ? ` — ${fmtPreco(p.preco_tabela)}` : ""}`]);
     fields = cfg.fields.map(f => f.name === "tipo_negocio"
       ? { ...f, options: [f.options[0], ...opsProdutos, ...f.options.slice(1)] }
       : f);
