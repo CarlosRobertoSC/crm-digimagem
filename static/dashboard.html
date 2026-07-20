@@ -838,11 +838,27 @@
   </div>
 </div>
 
+<!-- ========== MODAL: ORÇAMENTO DO NEGÓCIO (Fase 2) ========== -->
+<div class="modal-overlay" id="orcOverlay">
+  <div class="modal-box hist-box">
+    <div class="hist-head">
+      <h3 style="margin-bottom:0;">🧾 Orçamento</h3>
+      <div class="hist-sub" id="orcSub"></div>
+    </div>
+    <div style="padding:14px 18px;max-height:60vh;overflow:auto;" id="orcCorpo"></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;padding:12px 18px;border-top:1px solid var(--border);flex-wrap:wrap;">
+      <button class="btn-mini" onclick="copiarProposta()" id="orcBtnCopiar">📋 Copiar proposta</button>
+      <button class="btn-mini" onclick="enviarPropostaWhats()" id="orcBtnWhats">🟢 Enviar no WhatsApp</button>
+      <button class="btn-mini" onclick="fecharOrcamento()">Fechar</button>
+    </div>
+  </div>
+</div>
+
 <!-- ========== MODAL: HISTÓRICO DA NEGOCIAÇÃO ========== -->
 <div class="modal-overlay" id="histOverlay">
   <div class="modal-box hist-box">
     <div class="hist-head">
-      <h3 id="histTitle" style="margin-bottom:0;">Histórico da negociação</h3>
+      <h3 id="histTitle" style="margin-bottom:0;">Histórico da negociação <button class="btn-mini" style="margin-left:8px;vertical-align:middle;" onclick="abrirOrcamento(HIST_DEAL_ID)" title="Abrir o orçamento deste negócio">🧾 Orçamento</button></h3>
       <div class="hist-sub" id="histSub"></div>
     </div>
     <div class="hist-timeline" id="histTimeline"></div>
@@ -1294,6 +1310,7 @@ async function showCustomer(customerId) {
       <div class="task-row">
         <span>${esc(d.titulo)} — R$ ${Number(d.valor_estimado).toLocaleString("pt-BR")} <span style="color:var(--text-muted);">(${ETAPA_LABEL[d.etapa_funil] || d.etapa_funil})</span></span>
         <span style="display:flex;gap:5px;flex-shrink:0;">
+          <button class="btn-mini" onclick="abrirOrcamento('${d.id}')" title="Orçamento (itens, frete e proposta)">🧾</button>
           <button class="btn-mini" onclick="openHistorico('${d.id}')" title="Histórico da negociação">💬</button>
           ${d.status === "aberto" ? `<button class="btn-mini" onclick="SELECTED_EDIT_DEAL_ID='${d.id}'; openModal('editar_negocio')">Editar</button>` : ""}
         </span>
@@ -2524,6 +2541,131 @@ async function carregarAnexoImg(img) {
   } catch {
     img.style.display = "none";
   }
+}
+
+let ORC_DEAL_ID = null;
+let ORC_CLIENTE_WHATS = null;
+
+async function abrirOrcamento(dealId) {
+  ORC_DEAL_ID = dealId;
+  document.getElementById("orcOverlay").classList.add("open");
+  document.getElementById("orcCorpo").innerHTML = `<div style="color:var(--text-muted);font-size:12px;">Carregando…</div>`;
+  await renderOrcamento();
+}
+
+function fecharOrcamento() {
+  document.getElementById("orcOverlay").classList.remove("open");
+  ORC_DEAL_ID = null;
+  if (SELECTED_CUSTOMER_ID) showCustomer(SELECTED_CUSTOMER_ID);
+}
+
+async function renderOrcamento() {
+  let o;
+  try { o = await api(`/deals/${ORC_DEAL_ID}/orcamento`); }
+  catch (e) { document.getElementById("orcCorpo").innerHTML = `<div style="color:var(--urgent);font-size:12px;">${esc(e.message)}</div>`; return; }
+  ORC_ORCAMENTO = o;
+  document.getElementById("orcSub").textContent =
+    o.frete ? `Cliente em ${o.frete.uf} · frete grátis a partir de ${fmtPreco(o.frete.minimo)}`
+            : "Cliente sem UF cadastrada — edite o cliente para calcular o frete";
+  const podeEditar = o.pode_editar;
+  const linhasItens = o.itens.map(i => `
+    <tr>
+      <td>📦 ${esc(i.produto_nome)}${i.embalagem ? `<br><span style="color:var(--text-muted);font-size:10px;">${esc(i.embalagem)}</span>` : ""}${i.usou_limite ? `<br><span style="color:#e8a33d;font-size:10px;">↓ abaixo da tabela (${fmtPreco(i.preco_tabela)})</span>` : ""}</td>
+      <td style="text-align:center;">${i.qtd}</td>
+      <td style="white-space:nowrap;">${fmtPreco(i.preco_unit)}</td>
+      <td style="white-space:nowrap;">${fmtPreco(i.preco_unit * i.qtd)}</td>
+      <td>${podeEditar ? `<button class="btn-mini" onclick="removerItemOrcamento('${esc(i.id)}')" title="Remover item">🗑</button>` : ""}</td>
+    </tr>`).join("");
+  const opsProd = o.produtos_disponiveis.map(p =>
+    `<option value="${esc(p.id)}" data-preco="${p.preco_tabela ?? ""}">${esc(p.nome)}${p.preco_tabela ? ` — ${fmtPreco(p.preco_tabela)}` : ""}</option>`).join("");
+  const opsCond = [`<option value="">— condição de pagamento —</option>`]
+    .concat(o.condicoes_disponiveis.map(c =>
+      `<option value="${esc(c.id)}" ${o.condicao && o.condicao.id === c.id ? "selected" : ""}>${esc(c.forma)} · ${esc(c.condicao)}${c.acrescimo_pct ? ` (+${c.acrescimo_pct}%)` : ""}</option>`)).join("");
+  document.getElementById("orcCorpo").innerHTML = `
+    <table class="report-table">
+      <thead><tr><th>Produto</th><th>Qtd</th><th>Unitário</th><th>Subtotal</th><th></th></tr></thead>
+      <tbody>${linhasItens || `<tr><td colspan="5" style="color:var(--text-muted);">Nenhum item ainda — adicione abaixo.</td></tr>`}</tbody>
+    </table>
+    ${podeEditar ? `
+    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:10px 0;">
+      <select id="orcProduto" onchange="orcPrecoSugerido()" style="background:var(--surface-raised);border:1px solid var(--border);border-radius:8px;padding:7px 10px;color:var(--text-primary);font-size:12px;max-width:280px;">
+        <option value="">— produto —</option>${opsProd}
+      </select>
+      <input id="orcQtd" type="number" min="1" value="1" style="width:64px;background:var(--surface-raised);border:1px solid var(--border);border-radius:8px;padding:7px 8px;color:var(--text-primary);font-size:12px;" title="Quantidade">
+      <input id="orcPreco" type="number" step="0.01" placeholder="preço unit." style="width:110px;background:var(--surface-raised);border:1px solid var(--border);border-radius:8px;padding:7px 8px;color:var(--text-primary);font-size:12px;" title="Preço unitário praticado (pré-preenchido com a tabela)">
+      <button class="btn-mini" onclick="adicionarItemOrcamento()">+ Adicionar item</button>
+    </div>
+    <div id="orcErro" style="color:var(--urgent);font-size:11.5px;margin-bottom:8px;"></div>` : ""}
+    <div class="kv-row"><span>Subtotal</span><span>${fmtPreco(o.subtotal)}</span></div>
+    <div class="kv-row"><span>Pagamento</span><span style="text-align:right;">${podeEditar
+      ? `<select onchange="definirCondicaoOrcamento(this.value)" style="background:var(--surface-raised);border:1px solid var(--border);border-radius:8px;padding:6px 8px;color:var(--text-primary);font-size:11.5px;max-width:280px;">${opsCond}</select>`
+      : (o.condicao ? `${esc(o.condicao.forma)} · ${esc(o.condicao.condicao)}` : "—")}</span></div>
+    ${o.acrescimo ? `<div class="kv-row"><span>Acréscimo do cartão</span><span>${fmtPreco(o.acrescimo)}</span></div>` : ""}
+    <div class="kv-row"><span><b>Total</b></span><span><b>${fmtPreco(o.total)}</b></span></div>
+    ${o.frete ? `<div class="kv-row"><span>🚚 Frete</span><span style="text-align:right;color:${o.frete.gratis ? "#1fbf63" : "var(--text-primary)"};">${o.frete.gratis
+      ? `GRÁTIS ✓ (pedido acima de ${fmtPreco(o.frete.minimo)})`
+      : `faltam ${fmtPreco(o.frete.falta)} para o frete grátis`}</span></div>` : ""}
+    ${o.condicao && o.condicao.regra ? `<div style="font-size:10.5px;color:var(--text-muted);margin-top:6px;">⚠ ${esc(o.condicao.regra)}</div>` : ""}`;
+}
+
+let ORC_ORCAMENTO = null;
+
+function orcPrecoSugerido() {
+  const sel = document.getElementById("orcProduto");
+  const preco = sel.options[sel.selectedIndex]?.dataset?.preco;
+  if (preco) document.getElementById("orcPreco").value = preco;
+}
+
+async function adicionarItemOrcamento() {
+  const erro = document.getElementById("orcErro");
+  erro.textContent = "";
+  const produto_id = document.getElementById("orcProduto").value;
+  const qtd = document.getElementById("orcQtd").value;
+  const preco_unit = document.getElementById("orcPreco").value;
+  if (!produto_id) { erro.textContent = "Escolha um produto."; return; }
+  try {
+    await api(`/deals/${ORC_DEAL_ID}/orcamento/itens`, {
+      method: "POST",
+      body: JSON.stringify({ produto_id, qtd, preco_unit: preco_unit || null }),
+    });
+    await renderOrcamento();
+  } catch (e) { erro.textContent = e.message; }
+}
+
+async function removerItemOrcamento(itemId) {
+  try {
+    await api(`/deals/${ORC_DEAL_ID}/orcamento/itens/${itemId}`, { method: "DELETE" });
+    await renderOrcamento();
+  } catch (e) { alert(e.message); }
+}
+
+async function definirCondicaoOrcamento(cid) {
+  try {
+    await api(`/deals/${ORC_DEAL_ID}/orcamento/condicao`, {
+      method: "PUT", body: JSON.stringify({ condicao_pagamento_id: cid || null }),
+    });
+    await renderOrcamento();
+  } catch (e) { alert(e.message); }
+}
+
+async function copiarProposta() {
+  try {
+    const r = await api(`/deals/${ORC_DEAL_ID}/proposta`);
+    await navigator.clipboard.writeText(r.texto);
+    document.getElementById("orcBtnCopiar").textContent = "✓ Copiada!";
+    setTimeout(() => { const b = document.getElementById("orcBtnCopiar"); if (b) b.textContent = "📋 Copiar proposta"; }, 2000);
+  } catch (e) { alert(e.message || "Erro ao gerar a proposta."); }
+}
+
+async function enviarPropostaWhats() {
+  try {
+    const r = await api(`/deals/${ORC_DEAL_ID}/proposta`);
+    const d = await api(`/customers/${SELECTED_CUSTOMER_ID}`).catch(() => null);
+    const numero = d && d.customer && d.customer.whatsapp_id ? d.customer.whatsapp_id : "";
+    const url = numero ? `https://wa.me/${numero}?text=${encodeURIComponent(r.texto)}`
+                       : `https://wa.me/?text=${encodeURIComponent(r.texto)}`;
+    window.open(url, "_blank");
+  } catch (e) { alert(e.message || "Erro ao gerar a proposta."); }
 }
 
 async function openHistorico(dealId) {

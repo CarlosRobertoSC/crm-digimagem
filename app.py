@@ -1322,6 +1322,191 @@ def get_deal(deal_id):
 # os de outros administradores. As notas são imutáveis (sem edição ou
 # exclusão) para o histórico ser um registro confiável do que ocorreu.
 # ------------------------------------------------------------------
+# ------------------------------------------------------------------
+# 🧾 ORÇAMENTO DO NEGÓCIO (Fase 2) — o simulador nativo
+# ------------------------------------------------------------------
+def _calcular_orcamento(db, d):
+    """Monta o orçamento completo do negócio: itens, subtotal, acréscimo da
+    condição de pagamento, total e situação do frete pela UF do cliente."""
+    itens = [dict(r) for r in db.execute("""
+        SELECT i.*, p.nome as produto_nome, p.embalagem, p.preco_tabela
+        FROM deal_itens i JOIN produtos p ON p.id = i.produto_id
+        WHERE i.deal_id = ? ORDER BY i.created_at
+    """, (d["id"],)).fetchall()]
+    subtotal = sum(i["preco_unit"] * i["qtd"] for i in itens)
+    condicao = None
+    acrescimo = 0.0
+    if d["condicao_pagamento_id"]:
+        c = db.execute("SELECT * FROM condicoes_pagamento WHERE id = ?",
+                       (d["condicao_pagamento_id"],)).fetchone()
+        if c:
+            condicao = dict(c)
+            acrescimo = round(subtotal * (c["acrescimo_pct"] or 0) / 100, 2)
+    total = round(subtotal + acrescimo, 2)
+    cliente = db.execute("SELECT estado FROM customers WHERE id = ?", (d["customer_id"],)).fetchone()
+    uf = (cliente["estado"] or "").strip().upper() if cliente else ""
+    frete = None
+    if uf:
+        f = db.execute("SELECT * FROM frete_uf WHERE uf = ?", (uf,)).fetchone()
+        if f:
+            falta = max(0.0, round(f["minimo"] - total, 2))
+            frete = {"uf": uf, "minimo": f["minimo"], "falta": falta, "gratis": falta <= 0}
+    return {"itens": itens, "subtotal": round(subtotal, 2), "condicao": condicao,
+            "acrescimo": acrescimo, "total": total, "frete": frete}
+
+
+def _sincronizar_valor_negocio(db, deal_id):
+    """O valor do negócio acompanha o total do orçamento (sem marcos no
+    histórico de valores — o orçamento em si já é o detalhamento)."""
+    d = db.execute("SELECT * FROM deals WHERE id = ?", (deal_id,)).fetchone()
+    calc = _calcular_orcamento(db, d)
+    if calc["itens"]:
+        db.execute("UPDATE deals SET valor_estimado = ?, updated_at = ? WHERE id = ?",
+                   (calc["total"], now_iso(), deal_id))
+    return calc
+
+
+@app.get("/api/deals/<deal_id>/orcamento")
+@login_required
+def ver_orcamento(deal_id):
+    d, erro = _deal_permitido_ou_erro(deal_id)
+    if erro:
+        return erro
+    db = get_db()
+    calc = _calcular_orcamento(db, d)
+    condicoes = [dict(r) for r in db.execute(
+        "SELECT * FROM condicoes_pagamento WHERE eh_nota = 0 ORDER BY ordem").fetchall()]
+    produtos = [dict(r) for r in db.execute("""
+        SELECT id, nome, embalagem, preco_tabela, preco_limite FROM produtos
+        WHERE ativo = 1 AND ofertavel != 0 ORDER BY nome
+    """).fetchall()]
+    if g.current_user["role"] != "admin":
+        for p in produtos:
+            pass  # vendedor precisa do limite para a trava avisar ANTES? Não: o servidor valida; o campo não é enviado
+        produtos = [{k: v for k, v in p.items() if k != "preco_limite"} for p in produtos]
+    return jsonify({**calc, "condicoes_disponiveis": condicoes, "produtos_disponiveis": produtos,
+                    "pode_editar": g.current_user["role"] == "admin" or d["user_id"] == g.current_user["id"],
+                    "admin": g.current_user["role"] == "admin"})
+
+
+@app.post("/api/deals/<deal_id>/orcamento/itens")
+@login_required
+def add_item_orcamento(deal_id):
+    d, erro = _deal_permitido_ou_erro(deal_id, escrita=True)
+    if erro:
+        return erro
+    if d["status"] != "aberto":
+        return jsonify({"error": "Orçamento só pode ser alterado em negócio ABERTO — reabra o negócio se necessário."}), 400
+    body = request.get_json(force=True, silent=True) or {}
+    db = get_db()
+    p = db.execute("SELECT * FROM produtos WHERE id = ? AND ativo = 1 AND ofertavel != 0",
+                   (body.get("produto_id"),)).fetchone()
+    if not p:
+        return jsonify({"error": "Escolha um produto válido do catálogo (ativo e ofertável)."}), 400
+    qtd = _int_or_none(body.get("qtd"))
+    if not qtd or qtd < 1:
+        return jsonify({"error": "Informe a quantidade (número maior que zero)."}), 400
+    preco_unit = body.get("preco_unit")
+    try:
+        preco_unit = round(float(preco_unit), 2)
+    except (TypeError, ValueError):
+        preco_unit = None
+    if preco_unit is None:
+        preco_unit = p["preco_tabela"]
+    if preco_unit is None or preco_unit <= 0:
+        return jsonify({"error": "Informe o preço unitário (o produto não tem preço de tabela cadastrado)."}), 400
+    # 🛡 TRAVA DO PREÇO-LIMITE
+    limite = p["preco_limite"]
+    if limite and preco_unit < limite and g.current_user["role"] != "admin":
+        return jsonify({"error": f"Preço abaixo do limite de negociação deste produto (R$ {limite:.2f}). Peça a liberação a um administrador — só ele pode registrar abaixo do piso."}), 400
+    usou_limite = 1 if (p["preco_tabela"] and preco_unit < p["preco_tabela"]) else 0
+    iid = new_id()
+    db.execute("""
+        INSERT INTO deal_itens (id, deal_id, produto_id, qtd, preco_unit, usou_limite, user_id, created_at)
+        VALUES (?,?,?,?,?,?,?,?)
+    """, (iid, deal_id, p["id"], qtd, preco_unit, usou_limite, g.current_user["id"], now_iso()))
+    audit("create", "deal_itens", iid, {"deal": deal_id, "produto": p["nome"], "qtd": qtd,
+                                        "preco": preco_unit, "abaixo_tabela": bool(usou_limite),
+                                        "abaixo_limite": bool(limite and preco_unit < limite)})
+    calc = _sincronizar_valor_negocio(db, deal_id)
+    db.commit()
+    return jsonify({"ok": True, "id": iid, "total": calc["total"]}), 201
+
+
+@app.delete("/api/deals/<deal_id>/orcamento/itens/<item_id>")
+@login_required
+def remover_item_orcamento(deal_id, item_id):
+    d, erro = _deal_permitido_ou_erro(deal_id, escrita=True)
+    if erro:
+        return erro
+    if d["status"] != "aberto":
+        return jsonify({"error": "Orçamento só pode ser alterado em negócio ABERTO."}), 400
+    db = get_db()
+    i = db.execute("SELECT * FROM deal_itens WHERE id = ? AND deal_id = ?", (item_id, deal_id)).fetchone()
+    if not i:
+        return jsonify({"error": "Item não encontrado neste orçamento."}), 404
+    db.execute("DELETE FROM deal_itens WHERE id = ?", (item_id,))
+    audit("delete", "deal_itens", item_id, {"deal": deal_id})
+    _sincronizar_valor_negocio(db, deal_id)
+    db.commit()
+    return jsonify({"ok": True})
+
+
+@app.put("/api/deals/<deal_id>/orcamento/condicao")
+@login_required
+def definir_condicao_orcamento(deal_id):
+    d, erro = _deal_permitido_ou_erro(deal_id, escrita=True)
+    if erro:
+        return erro
+    body = request.get_json(force=True, silent=True) or {}
+    db = get_db()
+    cid = body.get("condicao_pagamento_id") or None
+    if cid:
+        c = db.execute("SELECT id FROM condicoes_pagamento WHERE id = ? AND eh_nota = 0", (cid,)).fetchone()
+        if not c:
+            return jsonify({"error": "Condição de pagamento inválida."}), 400
+    db.execute("UPDATE deals SET condicao_pagamento_id = ?, updated_at = ? WHERE id = ?",
+               (cid, now_iso(), deal_id))
+    _sincronizar_valor_negocio(db, deal_id)
+    db.commit()
+    return jsonify({"ok": True})
+
+
+@app.get("/api/deals/<deal_id>/proposta")
+@login_required
+def gerar_proposta(deal_id):
+    """📄 Texto da proposta para o CLIENTE: itens, totais, pagamento e frete.
+    NUNCA inclui preço-limite ou dados internos."""
+    d, erro = _deal_permitido_ou_erro(deal_id)
+    if erro:
+        return erro
+    db = get_db()
+    calc = _calcular_orcamento(db, d)
+    if not calc["itens"]:
+        return jsonify({"error": "Adicione itens ao orçamento antes de gerar a proposta."}), 400
+    fmt = lambda v: f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    linhas = [f"*Proposta Digimagem — {d['cliente_nome']}*", ""]
+    for i in calc["itens"]:
+        linhas.append(f"• {i['produto_nome']} — {i['qtd']}x {fmt(i['preco_unit'])} = {fmt(i['preco_unit'] * i['qtd'])}")
+        if i["embalagem"]:
+            linhas.append(f"   ({i['embalagem']})")
+    linhas.append("")
+    linhas.append(f"Subtotal: {fmt(calc['subtotal'])}")
+    if calc["acrescimo"]:
+        linhas.append(f"Acréscimo do cartão: {fmt(calc['acrescimo'])}")
+    linhas.append(f"*Total: {fmt(calc['total'])}*")
+    if calc["condicao"]:
+        linhas.append(f"Pagamento: {calc['condicao']['forma']} — {calc['condicao']['condicao']}")
+    if calc["frete"]:
+        if calc["frete"]["gratis"]:
+            linhas.append(f"🚚 *Frete GRÁTIS* para {calc['frete']['uf']} (pedido acima de {fmt(calc['frete']['minimo'])})")
+        else:
+            linhas.append(f"🚚 Faltam apenas {fmt(calc['frete']['falta'])} para o seu pedido ter *frete grátis* ({calc['frete']['uf']}: mínimo {fmt(calc['frete']['minimo'])})")
+    linhas.append("")
+    linhas.append("Preços vigentes até comunicado da Fujifilm. Fico à disposição!")
+    return jsonify({"texto": "\n".join(linhas)})
+
+
 @app.post("/api/customers/<customer_id>/transferir")
 @login_required
 def transferir_cliente(customer_id):
@@ -2189,10 +2374,12 @@ def importar_base_comercial():
             regra = str(row[3]).strip() if row[3] else ""
             eh_nota = 1 if (not condicao or perfil.lower() in ("importante", "validade", "regra confirmada")) else 0
             ordem += 1
+            m_pct = re.search(r"acr[eé]scimo de\s*(\d+(?:[.,]\d+)?)\s*%", condicao, re.IGNORECASE)
+            acrescimo_pct = float(m_pct.group(1).replace(",", ".")) if m_pct else 0.0
             db.execute("""
-                INSERT INTO condicoes_pagamento (id, perfil, forma, condicao, regra, eh_nota, ordem, atualizado_em)
-                VALUES (?,?,?,?,?,?,?,?)
-            """, (new_id(), perfil, forma, condicao, regra, eh_nota, ordem, agora))
+                INSERT INTO condicoes_pagamento (id, perfil, forma, condicao, regra, eh_nota, ordem, acrescimo_pct, atualizado_em)
+                VALUES (?,?,?,?,?,?,?,?,?)
+            """, (new_id(), perfil, forma, condicao, regra, eh_nota, ordem, acrescimo_pct, agora))
             resumo["notas" if eh_nota else "condicoes"] += 1
 
     audit("update", "base_comercial", "importacao", resumo)
@@ -3157,6 +3344,12 @@ def migrate_missing_columns(conn):
             "editada_por": "TEXT",
             "editada_em": "TEXT",
             "escopo_users": "TEXT",
+        },
+        "condicoes_pagamento": {
+            "acrescimo_pct": "REAL NOT NULL DEFAULT 0",
+        },
+        "deals": {
+            "condicao_pagamento_id": "TEXT",
         },
         "produtos": {
             "seq": "INTEGER",

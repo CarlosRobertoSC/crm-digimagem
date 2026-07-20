@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS deals (
     produto_software         TEXT,  -- revele_momentos | revele_momentos_frontier
     produto_id               TEXT REFERENCES produtos(id),  -- 📦 produto do catálogo (opcional)
     produto_qtd              INTEGER,  -- 📦 unidades negociadas (NULL = 1)
+    condicao_pagamento_id    TEXT,      -- 🧾 condição de pagamento do orçamento
     created_at               TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at                TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -194,8 +195,23 @@ CREATE TABLE IF NOT EXISTS condicoes_pagamento (
     regra         TEXT,
     eh_nota       INTEGER NOT NULL DEFAULT 0,
     ordem         INTEGER,
+    acrescimo_pct REAL NOT NULL DEFAULT 0,  -- ex.: 2.0 = +2% (cartão)
     atualizado_em TEXT
 );
+
+-- 🧾 Itens do orçamento de cada negócio (Fase 2)
+CREATE TABLE IF NOT EXISTS deal_itens (
+    id          TEXT PRIMARY KEY,
+    deal_id     TEXT NOT NULL REFERENCES deals(id) ON DELETE CASCADE,
+    produto_id  TEXT NOT NULL REFERENCES produtos(id),
+    qtd         INTEGER NOT NULL DEFAULT 1,
+    preco_unit  REAL NOT NULL,              -- preço praticado nesta proposta
+    usou_limite INTEGER NOT NULL DEFAULT 0, -- 1 = abaixo do preço de tabela
+    user_id     TEXT REFERENCES users(id),
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_deal_itens_deal ON deal_itens(deal_id);
 
 -- ⇄ Transferências de titularidade de clientes (auditoria completa)
 CREATE TABLE IF NOT EXISTS customer_transfers (
