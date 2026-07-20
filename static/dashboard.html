@@ -2331,6 +2331,66 @@ async function toggleProduto(id) {
 }
 
 let SELECTED_PRODUTO = null;
+let MODAL_ITENS = [];
+let ITENS_SEL = null;
+
+function itensFiltrar() {
+  const box = document.getElementById("itensOpcoes");
+  const q = (document.getElementById("itensBusca").value || "").toLowerCase().trim();
+  if (!q) { box.innerHTML = ""; return; }
+  const achados = PRODUTOS_CACHE
+    .filter(p => p.ativo && p.ofertavel !== 0 &&
+      `${p.nome} ${p.categoria || ""} ${p.equipamento || ""}`.toLowerCase().includes(q))
+    .slice(0, 8);
+  box.innerHTML = achados.length ? achados.map(p => `
+    <div onclick="itensEscolher('${esc(p.id)}')"
+      style="cursor:pointer;padding:7px 10px;border:1px solid var(--border);border-radius:8px;margin-top:4px;font-size:12px;background:var(--surface-raised);">
+      📦 ${esc(p.nome)} ${p.preco_tabela ? `<span style="color:var(--text-muted);">— ${fmtPreco(p.preco_tabela)}</span>` : ""}
+    </div>`).join("")
+    : `<div style="font-size:11px;color:var(--text-muted);padding:6px 2px;">Nenhum produto encontrado${PRODUTOS_CACHE.length ? "" : " — o catálogo está vazio (admin: importe a planilha em ◎ Metas)"}.</div>`;
+}
+
+function itensEscolher(id) {
+  ITENS_SEL = PRODUTOS_CACHE.find(p => p.id === id);
+  if (!ITENS_SEL) return;
+  document.getElementById("itensOpcoes").innerHTML = "";
+  document.getElementById("itensBusca").value = "";
+  document.getElementById("itensSelecionado").style.display = "flex";
+  document.getElementById("itensSelNome").textContent = "📦 " + ITENS_SEL.nome;
+  document.getElementById("itensQtd").value = 1;
+  document.getElementById("itensPreco").value = ITENS_SEL.preco_tabela ?? "";
+}
+
+function itensAdicionar() {
+  if (!ITENS_SEL) return;
+  const qtd = Math.max(1, parseInt(document.getElementById("itensQtd").value, 10) || 1);
+  const preco = parseFloat(document.getElementById("itensPreco").value);
+  MODAL_ITENS.push({ produto_id: ITENS_SEL.id, nome: ITENS_SEL.nome, qtd,
+                     preco_unit: isNaN(preco) ? null : preco,
+                     preco_ref: isNaN(preco) ? (ITENS_SEL.preco_tabela || 0) : preco });
+  ITENS_SEL = null;
+  document.getElementById("itensSelecionado").style.display = "none";
+  itensRenderLista();
+}
+
+function itensRemover(idx) {
+  MODAL_ITENS.splice(idx, 1);
+  itensRenderLista();
+}
+
+function itensRenderLista() {
+  const box = document.getElementById("itensLista");
+  if (!box) return;
+  if (!MODAL_ITENS.length) { box.innerHTML = ""; return; }
+  const subtotal = MODAL_ITENS.reduce((s, i) => s + (i.preco_ref * i.qtd), 0);
+  box.innerHTML = MODAL_ITENS.map((i, idx) => `
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;font-size:12px;padding:5px 2px;border-bottom:1px solid var(--border);">
+      <span>📦 ${esc(i.nome)} — ${i.qtd}x ${i.preco_unit === null ? "(tabela)" : fmtPreco(i.preco_unit)}</span>
+      <span style="display:flex;gap:8px;align-items:center;white-space:nowrap;">${fmtPreco(i.preco_ref * i.qtd)}
+        <button type="button" onclick="itensRemover(${idx})" style="background:none;border:none;cursor:pointer;color:var(--urgent);font-size:12px;" title="Remover">✕</button></span>
+    </div>`).join("") +
+    `<div style="text-align:right;font-size:12px;margin-top:5px;"><b>Subtotal: ${fmtPreco(subtotal)}</b> <span style="color:var(--text-muted);font-size:10.5px;">· frete e pagamento no 🧾 depois de salvar</span></div>`;
+}
 
 function editarProduto(id) {
   SELECTED_PRODUTO = PRODUTOS_CACHE.find(p => p.id === id);
@@ -2928,9 +2988,9 @@ const MODAL_CONFIG = {
           ["revele_momentos", "🎞 Software — Revele Momentos"],
           ["revele_momentos_frontier", "🎞 Software — Revele Momentos Frontier"],
         ] },
-      { name: "produto_qtd", label: "📦 Quantidade de unidades (se escolheu um produto acima — padrão 1)", type: "number" },
-      { name: "titulo", label: "Título do negócio (ex.: Assinatura Revele Momentos)", type: "text", required: true },
-      { name: "valor_estimado", label: "Valor estimado (R$)", type: "number" },
+      { name: "itens", label: "🧾 Itens do orçamento (venda padrão) — busque o produto, informe quantidade e preço", type: "orcamento_itens" },
+      { name: "titulo", label: "Título do negócio (ex.: Reposição de cartuchos DX100)", type: "text", required: true },
+      { name: "valor_estimado", label: "Valor estimado (R$) — se houver itens acima, o total deles é usado automaticamente", type: "number" },
       { name: "etapa_funil", label: "Etapa", type: "select",
         options: [["novo_lead","Novo lead"], ["qualificacao","Qualificação"], ["proposta_enviada","Proposta enviada"], ["negociacao","Negociação"]] },
       { name: "data_prevista_fechamento", label: "Previsão de fechamento (opcional)", type: "date" },
@@ -2938,17 +2998,14 @@ const MODAL_CONFIG = {
     submit: async (values) => {
       values.customer_id = SELECTED_CUSTOMER_ID;
       values.valor_estimado = values.valor_estimado ? Number(values.valor_estimado) : 0;
-      if (values.tipo_negocio && values.tipo_negocio.startsWith("prod:")) {
-        values.produto_id = values.tipo_negocio.slice(5); // venda padrão + elo com o produto/meta
-        values.produto_qtd = Math.max(1, parseInt(values.produto_qtd, 10) || 1);
-      } else {
-        delete values.produto_qtd; // quantidade só faz sentido com produto do catálogo
-      }
-      if (values.tipo_negocio && !values.tipo_negocio.startsWith("prod:") && values.tipo_negocio !== "padrao") {
+      if (values.tipo_negocio && values.tipo_negocio !== "padrao") {
         values.categoria = "software";
         values.produto_software = values.tipo_negocio;
       }
       delete values.tipo_negocio;
+      if (MODAL_ITENS.length) {
+        values.itens = MODAL_ITENS.map(i => ({ produto_id: i.produto_id, qtd: i.qtd, preco_unit: i.preco_unit }));
+      }
       return api("/deals", { method: "POST", body: JSON.stringify(values) });
     },
     onSuccess: async () => {
@@ -3310,13 +3367,9 @@ async function openModal(kind) {
 
   let fields = cfg.fields;
   if (kind === "negocio") {
-    // 📦 injeta os produtos ativos do catálogo no "Tipo de negócio"
-    await carregarProdutos();
-    const opsProdutos = PRODUTOS_CACHE.filter(p => p.ativo && p.ofertavel !== 0)
-      .map(p => [`prod:${p.id}`, `📦 ${p.nome}${p.preco_tabela ? ` — ${fmtPreco(p.preco_tabela)}` : ""}`]);
-    fields = cfg.fields.map(f => f.name === "tipo_negocio"
-      ? { ...f, options: [f.options[0], ...opsProdutos, ...f.options.slice(1)] }
-      : f);
+    await carregarProdutos(); // alimenta a busca do montador de itens
+    MODAL_ITENS = [];
+    ITENS_SEL = null;
   }
   if (kind === "transferir_cliente") {
     const usuarios = await api("/users");
@@ -3380,6 +3433,22 @@ async function openModal(kind) {
         </div>
       </div>`;
     }
+    if (f.type === "orcamento_itens") {
+      return `<div class="field"><label>${f.label}</label>
+        <input id="itensBusca" placeholder="🔍 Digite para buscar no catálogo… (ex.: cartucho dx100)" autocomplete="off" oninput="itensFiltrar()"
+          style="width:100%;background:var(--surface-raised);border:1px solid var(--border);border-radius:8px;padding:9px 12px;color:var(--text-primary);font-size:12.5px;">
+        <div id="itensOpcoes" style="max-height:150px;overflow:auto;"></div>
+        <div id="itensSelecionado" style="display:none;align-items:center;gap:6px;flex-wrap:wrap;margin-top:6px;">
+          <span id="itensSelNome" style="font-size:12px;color:var(--accent);"></span>
+          <input id="itensQtd" type="number" min="1" value="1" title="Quantidade"
+            style="width:62px;background:var(--surface-raised);border:1px solid var(--border);border-radius:8px;padding:7px 8px;color:var(--text-primary);font-size:12px;">
+          <input id="itensPreco" type="number" step="0.01" placeholder="preço unit." title="Preço unitário praticado"
+            style="width:106px;background:var(--surface-raised);border:1px solid var(--border);border-radius:8px;padding:7px 8px;color:var(--text-primary);font-size:12px;">
+          <button type="button" class="btn-mini" onclick="itensAdicionar()">+ Adicionar</button>
+        </div>
+        <div id="itensLista" style="margin-top:6px;"></div>
+      </div>`;
+    }
     if (f.type === "checkboxes") {
       return `<div class="field"><label>${f.label}</label>
         <div class="check-group" id="modal_${f.name}">
@@ -3391,7 +3460,7 @@ async function openModal(kind) {
       <input type="${f.type}" id="modal_${f.name}" ${f.required ? "required" : ""}>
     </div>`;
   }).join("");
-  fieldsBox.dataset.activeFields = JSON.stringify(fields.map(f => ({name: f.name, label: f.label, required: !!f.required, type: f.type})));
+  fieldsBox.dataset.activeFields = JSON.stringify(fields.filter(f => f.type !== "orcamento_itens").map(f => ({name: f.name, label: f.label, required: !!f.required, type: f.type})));
 
   // pré-preenche valores quando o modal é de edição (ex: editar usuário)
   if (cfg.prefill) {

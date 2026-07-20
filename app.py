@@ -1147,6 +1147,37 @@ def create_deal():
             return jsonify({"error": "Produto do catálogo inválido ou inativo."}), 400
         produto_id = pr["id"]
     produto_qtd = (_int_or_none(body.get("produto_qtd")) or 1) if produto_id else None
+    # 🧾 itens do orçamento na criação — validação COMPLETA antes de gravar
+    itens_norm = []
+    if body.get("itens"):
+        if categoria == "software":
+            return jsonify({"error": "Itens de orçamento são para venda padrão — o software é uma assinatura, sem itens."}), 400
+        if not isinstance(body["itens"], list):
+            return jsonify({"error": "Formato inválido dos itens do orçamento."}), 400
+        eh_admin = g.current_user["role"] == "admin"
+        for idx, it in enumerate(body["itens"], 1):
+            p = db.execute("SELECT * FROM produtos WHERE id = ? AND ativo = 1 AND ofertavel != 0",
+                           ((it or {}).get("produto_id"),)).fetchone()
+            if not p:
+                return jsonify({"error": f"Item {idx}: produto inválido ou fora de oferta."}), 400
+            qtd = _int_or_none(it.get("qtd"))
+            if not qtd or qtd < 1:
+                return jsonify({"error": f"Item {idx} ({p['nome']}): informe a quantidade."}), 400
+            try:
+                preco = round(float(it.get("preco_unit")), 2) if it.get("preco_unit") not in (None, "") else None
+            except (TypeError, ValueError):
+                preco = None
+            if preco is None:
+                preco = p["preco_tabela"]
+            if preco is None or preco <= 0:
+                return jsonify({"error": f"Item {idx} ({p['nome']}): informe o preço unitário."}), 400
+            limite = p["preco_limite"]
+            if limite and preco < limite and not eh_admin:
+                return jsonify({"error": f"Item {idx} ({p['nome']}): preço abaixo do limite de negociação (R$ {limite:.2f}). Peça a liberação a um administrador."}), 400
+            usou_limite = 1 if (p["preco_tabela"] and preco < p["preco_tabela"]) else 0
+            itens_norm.append({"produto_id": p["id"], "nome": p["nome"], "qtd": qtd,
+                               "preco": preco, "usou_limite": usou_limite,
+                               "abaixo_limite": bool(limite and preco < limite)})
 
     did = new_id()
     etapa_inicial = body.get("etapa_funil", "novo_lead")
@@ -1157,6 +1188,19 @@ def create_deal():
     """, (did, body["customer_id"], user_id, body["titulo"],
           etapa_inicial, body.get("valor_estimado", 0), body.get("data_prevista_fechamento"),
           categoria, produto_software, produto_id, produto_qtd))
+    if itens_norm:
+        for it in itens_norm:
+            iid = new_id()
+            db.execute("""
+                INSERT INTO deal_itens (id, deal_id, produto_id, qtd, preco_unit, usou_limite, user_id, created_at)
+                VALUES (?,?,?,?,?,?,?,?)
+            """, (iid, did, it["produto_id"], it["qtd"], it["preco"], it["usou_limite"],
+                  g.current_user["id"], now_iso()))
+            audit("create", "deal_itens", iid, {"deal": did, "produto": it["nome"], "qtd": it["qtd"],
+                                                "preco": it["preco"], "abaixo_tabela": bool(it["usou_limite"]),
+                                                "abaixo_limite": it["abaixo_limite"]})
+        subtotal = round(sum(it["preco"] * it["qtd"] for it in itens_norm), 2)
+        db.execute("UPDATE deals SET valor_estimado = ? WHERE id = ?", (subtotal, did))
     # 💰 valor inicial entra no histórico (valor_anterior NULL = "inicial")
     db.execute("""
         INSERT INTO deal_value_history (id, deal_id, valor_anterior, valor_novo, user_id, created_at)
@@ -2523,14 +2567,33 @@ def _meta_progresso_map(db, m):
     """{user_id: quantidade apurada} dentro da janela."""
     ini, fim = _meta_janela(m)
     if m["tipo"] == "vendas":
-        extra, extra_params = _meta_filtro_vendas(m)
-        # conta UNIDADES vendidas: negócio com produto soma a quantidade dele;
-        # negócio sem produto (ou software) vale 1 unidade.
-        rows = db.execute(f"""
-            SELECT user_id, COALESCE(SUM(COALESCE(produto_qtd, 1)), 0) qtd FROM deals
-            WHERE status = 'ganho' AND etapa_atualizada_em BETWEEN ? AND ?{extra}
-            GROUP BY user_id
-        """, [ini, fim] + extra_params).fetchall()
+        # conta UNIDADES vendidas. Fonte da verdade: os ITENS do orçamento
+        # (soma das quantidades). Negócio antigo sem itens usa o produto
+        # principal (produto_id/produto_qtd); sem nada, vale 1 unidade.
+        if (m["alvo_vendas"] or "qualquer") == "produto":
+            pid = m["alvo_produto_id"]
+            rows = db.execute("""
+                SELECT d.user_id, COALESCE(SUM(
+                    CASE WHEN EXISTS (SELECT 1 FROM deal_itens i WHERE i.deal_id = d.id)
+                         THEN COALESCE((SELECT SUM(i.qtd) FROM deal_itens i
+                                        WHERE i.deal_id = d.id AND i.produto_id = ?), 0)
+                         ELSE CASE WHEN d.produto_id = ? THEN COALESCE(d.produto_qtd, 1) ELSE 0 END
+                    END), 0) qtd
+                FROM deals d
+                WHERE d.status = 'ganho' AND d.etapa_atualizada_em BETWEEN ? AND ?
+                GROUP BY d.user_id
+            """, (pid, pid, ini, fim)).fetchall()
+        else:
+            extra, extra_params = _meta_filtro_vendas(m)
+            rows = db.execute(f"""
+                SELECT d.user_id, COALESCE(SUM(
+                    CASE WHEN EXISTS (SELECT 1 FROM deal_itens i WHERE i.deal_id = d.id)
+                         THEN (SELECT SUM(i.qtd) FROM deal_itens i WHERE i.deal_id = d.id)
+                         ELSE COALESCE(d.produto_qtd, 1) END), 0) qtd
+                FROM deals d
+                WHERE d.status = 'ganho' AND d.etapa_atualizada_em BETWEEN ? AND ?{extra}
+                GROUP BY d.user_id
+            """, [ini, fim] + extra_params).fetchall()
     else:
         rows = db.execute("""
             SELECT user_id, COALESCE(SUM(quantidade), 0) qtd FROM meta_progresso
