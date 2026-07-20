@@ -1419,7 +1419,7 @@ def ver_orcamento(deal_id):
     db = get_db()
     calc = _calcular_orcamento(db, d)
     condicoes = [dict(r) for r in db.execute(
-        "SELECT * FROM condicoes_pagamento WHERE eh_nota = 0 ORDER BY ordem").fetchall()]
+        "SELECT * FROM condicoes_pagamento WHERE simples = 1 ORDER BY ordem").fetchall()]
     produtos = [dict(r) for r in db.execute("""
         SELECT id, nome, embalagem, preco_tabela, preco_limite FROM produtos
         WHERE ativo = 1 AND ofertavel != 0 ORDER BY nome
@@ -2402,7 +2402,7 @@ def importar_base_comercial():
     # ---------------- Condições de pagamento ----------------
     if "Pagamentos" in wb.sheetnames:
         ws = wb["Pagamentos"]
-        db.execute("DELETE FROM condicoes_pagamento")
+        db.execute("DELETE FROM condicoes_pagamento WHERE simples = 0")
         cabecalho_visto = False
         ordem = 0
         for row in ws.iter_rows(values_only=True):
@@ -2418,12 +2418,13 @@ def importar_base_comercial():
             regra = str(row[3]).strip() if row[3] else ""
             eh_nota = 1 if (not condicao or perfil.lower() in ("importante", "validade", "regra confirmada")) else 0
             ordem += 1
+            ordem_gravar = ordem + 10  # as 3 simplificadas (1-3) vêm antes
             m_pct = re.search(r"acr[eé]scimo de\s*(\d+(?:[.,]\d+)?)\s*%", condicao, re.IGNORECASE)
             acrescimo_pct = float(m_pct.group(1).replace(",", ".")) if m_pct else 0.0
             db.execute("""
                 INSERT INTO condicoes_pagamento (id, perfil, forma, condicao, regra, eh_nota, ordem, acrescimo_pct, atualizado_em)
                 VALUES (?,?,?,?,?,?,?,?,?)
-            """, (new_id(), perfil, forma, condicao, regra, eh_nota, ordem, acrescimo_pct, agora))
+            """, (new_id(), perfil, forma, condicao, regra, eh_nota, ordem_gravar, acrescimo_pct, agora))
             resumo["notas" if eh_nota else "condicoes"] += 1
 
     audit("update", "base_comercial", "importacao", resumo)
@@ -3410,6 +3411,7 @@ def migrate_missing_columns(conn):
         },
         "condicoes_pagamento": {
             "acrescimo_pct": "REAL NOT NULL DEFAULT 0",
+            "simples": "INTEGER NOT NULL DEFAULT 0",
         },
         "deals": {
             "condicao_pagamento_id": "TEXT",
@@ -3477,6 +3479,22 @@ def migrate_missing_columns(conn):
         conn.execute("ALTER TABLE customers_nova RENAME TO customers")
         conn.execute("PRAGMA foreign_keys = ON")
         conn.commit()
+
+    # 💳 As 3 condições SIMPLIFICADAS do orçamento (ids fixos: sobrevivem a
+    # reimportações e mantêm os orçamentos antigos apontando certo).
+    # A tabela detalhada importada da planilha permanece como consulta.
+    for cid, forma, condicao, regra, pct, ordem in (
+        ("cond-pix", "PIX/TED", "À vista", "", 0.0, 1),
+        ("cond-cartao", "Cartão de crédito", "Até 10x, com acréscimo de 2%", "", 2.0, 2),
+        ("cond-boleto", "Boleto", "Prazos conforme o valor do pedido",
+         "Sujeito à aprovação do financeiro — consulte as faixas na tabela 💳 do catálogo", 0.0, 3),
+    ):
+        conn.execute("""
+            INSERT OR REPLACE INTO condicoes_pagamento
+                (id, perfil, forma, condicao, regra, eh_nota, ordem, acrescimo_pct, simples, atualizado_em)
+            VALUES (?,?,?,?,?,0,?,?,1,datetime('now'))
+        """, (cid, "Todos", forma, condicao, regra, ordem, pct))
+    conn.commit()
 
 
 def init_db_if_needed():
