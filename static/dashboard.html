@@ -2693,7 +2693,7 @@ async function renderOrcamento() {
   const podeEditar = o.pode_editar;
   const linhasItens = o.itens.map(i => `
     <tr>
-      <td>📦 ${esc(i.produto_nome)}${i.embalagem ? `<br><span style="color:var(--text-muted);font-size:10px;">${esc(i.embalagem)}</span>` : ""}${i.usou_limite ? `<br><span style="color:#e8a33d;font-size:10px;">↓ abaixo da tabela (${fmtPreco(i.preco_tabela)})</span>` : ""}</td>
+      <td>📦 ${esc(i.produto_nome)}${i.embalagem ? `<br><span style="color:var(--text-muted);font-size:10px;">${esc(i.embalagem)}</span>` : ""}${i.usou_limite ? `<br><span style="color:#e8a33d;font-size:10px;">↓ abaixo da tabela (${fmtPreco(i.preco_tabela)})</span>` : ""}${!i.aprovado ? `<br><span style="color:var(--urgent);font-size:10px;">⏳ aguardando liberação do administrador${i.liberacao_status === "negada" ? ` · NEGADO${i.liberacao_obs ? `: ${esc(i.liberacao_obs)}` : ""}` : ""}</span>` : ""}</td>
       <td style="text-align:center;">${i.qtd}</td>
       <td style="white-space:nowrap;">${fmtPreco(i.preco_unit)}</td>
       <td style="white-space:nowrap;">${fmtPreco(i.preco_unit * i.qtd)}</td>
@@ -2722,6 +2722,7 @@ async function renderOrcamento() {
       </div>
     </div>
     <div id="orcErro" style="color:var(--urgent);font-size:11.5px;margin-bottom:8px;"></div>` : ""}
+    ${o.pendentes_liberacao ? `<div style="background:rgba(232,163,61,.12);border:1px solid #e8a33d;border-radius:8px;padding:8px 10px;margin:8px 0;font-size:11.5px;color:#e8a33d;">⏳ ${o.pendentes_liberacao} item(ns) abaixo do limite aguardam liberação. A proposta pode ser enviada normalmente, mas o negócio só poderá ser marcado como GANHO após a aprovação do administrador.</div>` : ""}
     <div class="kv-row"><span>Subtotal</span><span>${fmtPreco(o.subtotal)}</span></div>
     <div class="kv-row"><span>Pagamento</span><span style="text-align:right;">${podeEditar
       ? `<select onchange="definirCondicaoOrcamento(this.value)" style="background:var(--surface-raised);border:1px solid var(--border);border-radius:8px;padding:6px 8px;color:var(--text-primary);font-size:11.5px;max-width:280px;">${opsCond}</select>`
@@ -2777,18 +2778,7 @@ async function adicionarItemOrcamento() {
     });
     ORC_SEL = null;
     await renderOrcamento();
-  } catch (e) {
-    erro.textContent = e.message;
-    if (/limite de negocia/i.test(e.message) && ORC_SEL) {
-      const prod = ORC_SEL;
-      const btn = document.createElement("button");
-      btn.className = "btn-mini";
-      btn.style.marginLeft = "8px";
-      btn.textContent = "🙋 Pedir liberação";
-      btn.onclick = () => pedirLiberacao(prod.id, preco_unit);
-      erro.appendChild(btn);
-    }
-  }
+  } catch (e) { erro.textContent = e.message; }
 }
 
 async function pedirLiberacao(produto_id, preco) {

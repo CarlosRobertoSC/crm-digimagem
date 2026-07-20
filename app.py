@@ -1172,12 +1172,11 @@ def create_deal():
             if preco is None or preco <= 0:
                 return jsonify({"error": f"Item {idx} ({p['nome']}): informe o preço unitário."}), 400
             limite = p["preco_limite"]
-            if limite and preco < limite and not eh_admin:
-                return jsonify({"error": f"Item {idx} ({p['nome']}): preço abaixo do limite de negociação (R$ {limite:.2f}). Salve o negócio com o preço de tabela e peça a liberação pelo 🧾 Orçamento."}), 400
+            abaixo_limite = bool(limite and preco < limite and not eh_admin)
             usou_limite = 1 if (p["preco_tabela"] and preco < p["preco_tabela"]) else 0
             itens_norm.append({"produto_id": p["id"], "nome": p["nome"], "qtd": qtd,
                                "preco": preco, "usou_limite": usou_limite,
-                               "abaixo_limite": bool(limite and preco < limite)})
+                               "abaixo_limite": abaixo_limite})
 
     did = new_id()
     etapa_inicial = body.get("etapa_funil", "novo_lead")
@@ -1191,11 +1190,20 @@ def create_deal():
     if itens_norm:
         for it in itens_norm:
             iid = new_id()
+            lib_id = None
+            if it["abaixo_limite"]:
+                lib_id = new_id()
+                db.execute("""
+                    INSERT INTO liberacoes_preco (id, deal_id, produto_id, user_id, preco_pedido, motivo, created_at)
+                    VALUES (?,?,?,?,?,?,?)
+                """, (lib_id, did, it["produto_id"], g.current_user["id"], it["preco"],
+                      "Pedido gerado na criação do negócio", now_iso()))
             db.execute("""
-                INSERT INTO deal_itens (id, deal_id, produto_id, qtd, preco_unit, usou_limite, user_id, created_at)
-                VALUES (?,?,?,?,?,?,?,?)
+                INSERT INTO deal_itens (id, deal_id, produto_id, qtd, preco_unit, usou_limite,
+                                        aprovado, liberacao_id, user_id, created_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?)
             """, (iid, did, it["produto_id"], it["qtd"], it["preco"], it["usou_limite"],
-                  g.current_user["id"], now_iso()))
+                  0 if it["abaixo_limite"] else 1, lib_id, g.current_user["id"], now_iso()))
             audit("create", "deal_itens", iid, {"deal": did, "produto": it["nome"], "qtd": it["qtd"],
                                                 "preco": it["preco"], "abaixo_tabela": bool(it["usou_limite"]),
                                                 "abaixo_limite": it["abaixo_limite"]})
@@ -1244,6 +1252,16 @@ def move_deal_stage(deal_id):
         # da linha do tempo (deal_stage_history.motivo_perda).
         motivo_perda, motivo_perda_detalhe = None, None
     if nova_etapa == "fechado_ganho":
+        # 🛡 trava de faturamento: itens abaixo do limite precisam de liberação
+        pendentes = db.execute("""
+            SELECT p.nome, i.preco_unit, p.preco_limite FROM deal_itens i
+            JOIN produtos p ON p.id = i.produto_id
+            WHERE i.deal_id = ? AND i.aprovado = 0
+        """, (deal_id,)).fetchall()
+        if pendentes:
+            nomes = "; ".join(f"{r['nome']} a R$ {r['preco_unit']:.2f} (limite R$ {r['preco_limite']:.2f})"
+                              for r in pendentes[:3])
+            return jsonify({"error": f"Não é possível faturar: {len(pendentes)} item(ns) do orçamento aguardam liberação do administrador — {nomes}."}), 400
         status = "ganho"
         motivo_perda, motivo_perda_detalhe = None, None
     elif nova_etapa == "fechado_perdido":
@@ -1373,8 +1391,10 @@ def _calcular_orcamento(db, d):
     """Monta o orçamento completo do negócio: itens, subtotal, acréscimo da
     condição de pagamento, total e situação do frete pela UF do cliente."""
     itens = [dict(r) for r in db.execute("""
-        SELECT i.*, p.nome as produto_nome, p.embalagem, p.preco_tabela
+        SELECT i.*, p.nome as produto_nome, p.embalagem, p.preco_tabela, p.preco_limite,
+               l.status as liberacao_status, l.observacao as liberacao_obs
         FROM deal_itens i JOIN produtos p ON p.id = i.produto_id
+        LEFT JOIN liberacoes_preco l ON l.id = i.liberacao_id
         WHERE i.deal_id = ? ORDER BY i.created_at
     """, (d["id"],)).fetchall()]
     subtotal = sum(i["preco_unit"] * i["qtd"] for i in itens)
@@ -1396,7 +1416,8 @@ def _calcular_orcamento(db, d):
             falta = max(0.0, round(f["minimo"] - total, 2))
             frete = {"uf": uf, "minimo": f["minimo"], "falta": falta, "gratis": falta <= 0}
     return {"itens": itens, "subtotal": round(subtotal, 2), "condicao": condicao,
-            "acrescimo": acrescimo, "total": total, "frete": frete}
+            "acrescimo": acrescimo, "total": total, "frete": frete,
+            "pendentes_liberacao": sum(1 for i in itens if not i["aprovado"])}
 
 
 def _sincronizar_valor_negocio(db, deal_id):
@@ -1514,6 +1535,10 @@ def decidir_liberacao(liberacao_id):
         db.execute("""UPDATE liberacoes_preco SET status = 'aprovada', preco_autorizado = ?,
                       admin_id = ?, observacao = ?, decidido_em = ? WHERE id = ?""",
                    (autorizado, g.current_user["id"], obs, now_iso(), liberacao_id))
+        # libera o item do orçamento (e ajusta o preço, se o admin mudou)
+        db.execute("""UPDATE deal_itens SET aprovado = 1, preco_unit = ?
+                      WHERE liberacao_id = ?""", (autorizado, liberacao_id))
+        _sincronizar_valor_negocio(db, l["deal_id"])
     audit("update", "liberacoes_preco", liberacao_id, {"decisao": decisao})
     db.commit()
     return jsonify({"ok": True})
@@ -1571,20 +1596,31 @@ def add_item_orcamento(deal_id):
     # 🛡 TRAVA DO PREÇO-LIMITE
     limite = p["preco_limite"]
     liberacao = None
+    aprovado = 1
+    lib_id = None
     if limite and preco_unit < limite and g.current_user["role"] != "admin":
+        # 🙋 abaixo do limite: SALVA assim mesmo (a proposta é negociação),
+        # porém pendente de liberação — e o pedido vai sozinho ao admin.
         liberacao = _liberacao_vigente(db, deal_id, p["id"], g.current_user["id"])
-        if not liberacao or preco_unit < liberacao["preco_autorizado"]:
-            autorizado = f" Sua liberação vigente é de R$ {liberacao['preco_autorizado']:.2f}." if liberacao else ""
-            return jsonify({"error": f"Preço abaixo do limite de negociação (R$ {limite:.2f}).{autorizado}",
-                            "pode_pedir_liberacao": not liberacao,
-                            "produto_id": p["id"], "produto_nome": p["nome"],
-                            "preco_limite": limite}), 400
+        if liberacao and preco_unit >= liberacao["preco_autorizado"]:
+            aprovado = 1  # já havia liberação vigente que cobre este preço
+        else:
+            aprovado = 0
+            lib_id = new_id()
+            db.execute("""
+                INSERT INTO liberacoes_preco (id, deal_id, produto_id, user_id, preco_pedido, motivo, created_at)
+                VALUES (?,?,?,?,?,?,?)
+            """, (lib_id, deal_id, p["id"], g.current_user["id"], preco_unit,
+                  (body.get("motivo") or "").strip()[:400] or None, now_iso()))
+            liberacao = None
     usou_limite = 1 if (p["preco_tabela"] and preco_unit < p["preco_tabela"]) else 0
     iid = new_id()
     db.execute("""
-        INSERT INTO deal_itens (id, deal_id, produto_id, qtd, preco_unit, usou_limite, user_id, created_at)
-        VALUES (?,?,?,?,?,?,?,?)
-    """, (iid, deal_id, p["id"], qtd, preco_unit, usou_limite, g.current_user["id"], now_iso()))
+        INSERT INTO deal_itens (id, deal_id, produto_id, qtd, preco_unit, usou_limite, aprovado,
+                                liberacao_id, user_id, created_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?)
+    """, (iid, deal_id, p["id"], qtd, preco_unit, usou_limite, aprovado, lib_id,
+          g.current_user["id"], now_iso()))
     audit("create", "deal_itens", iid, {"deal": deal_id, "produto": p["nome"], "qtd": qtd,
                                         "preco": preco_unit, "abaixo_tabela": bool(usou_limite),
                                         "abaixo_limite": bool(limite and preco_unit < limite),
@@ -3562,6 +3598,10 @@ def migrate_missing_columns(conn):
         },
         "deals": {
             "condicao_pagamento_id": "TEXT",
+        },
+        "deal_itens": {
+            "aprovado": "INTEGER NOT NULL DEFAULT 1",
+            "liberacao_id": "TEXT",
         },
         "produtos": {
             "seq": "INTEGER",

@@ -226,6 +226,8 @@ CREATE TABLE IF NOT EXISTS deal_itens (
     qtd         INTEGER NOT NULL DEFAULT 1,
     preco_unit  REAL NOT NULL,              -- preço praticado nesta proposta
     usou_limite INTEGER NOT NULL DEFAULT 0, -- 1 = abaixo do preço de tabela
+    aprovado    INTEGER NOT NULL DEFAULT 1, -- 0 = abaixo do limite, aguardando liberação
+    liberacao_id TEXT REFERENCES liberacoes_preco(id),
     user_id     TEXT REFERENCES users(id),
     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
