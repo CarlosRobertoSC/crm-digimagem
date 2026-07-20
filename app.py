@@ -1173,7 +1173,7 @@ def create_deal():
                 return jsonify({"error": f"Item {idx} ({p['nome']}): informe o preço unitário."}), 400
             limite = p["preco_limite"]
             if limite and preco < limite and not eh_admin:
-                return jsonify({"error": f"Item {idx} ({p['nome']}): preço abaixo do limite de negociação (R$ {limite:.2f}). Peça a liberação a um administrador."}), 400
+                return jsonify({"error": f"Item {idx} ({p['nome']}): preço abaixo do limite de negociação (R$ {limite:.2f}). Salve o negócio com o preço de tabela e peça a liberação pelo 🧾 Orçamento."}), 400
             usou_limite = 1 if (p["preco_tabela"] and preco < p["preco_tabela"]) else 0
             itens_norm.append({"produto_id": p["id"], "nome": p["nome"], "qtd": qtd,
                                "preco": preco, "usou_limite": usou_limite,
@@ -1410,6 +1410,115 @@ def _sincronizar_valor_negocio(db, deal_id):
     return calc
 
 
+def _liberacao_vigente(db, deal_id, produto_id, user_id):
+    """Liberação aprovada, não usada e dentro da validade (7 dias)."""
+    limite_data = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
+    return db.execute("""
+        SELECT * FROM liberacoes_preco
+        WHERE deal_id = ? AND produto_id = ? AND user_id = ?
+          AND status = 'aprovada' AND created_at >= ?
+        ORDER BY created_at DESC LIMIT 1
+    """, (deal_id, produto_id, user_id, limite_data)).fetchone()
+
+
+@app.post("/api/deals/<deal_id>/liberacoes")
+@login_required
+def pedir_liberacao(deal_id):
+    """🙋 Vendedor pede liberação para um preço abaixo do limite."""
+    d, erro = _deal_permitido_ou_erro(deal_id, escrita=True)
+    if erro:
+        return erro
+    body = request.get_json(force=True, silent=True) or {}
+    db = get_db()
+    p = db.execute("SELECT * FROM produtos WHERE id = ? AND ativo = 1 AND ofertavel != 0",
+                   (body.get("produto_id"),)).fetchone()
+    if not p:
+        return jsonify({"error": "Produto inválido."}), 400
+    try:
+        preco = round(float(body.get("preco_pedido")), 2)
+    except (TypeError, ValueError):
+        preco = None
+    if not preco or preco <= 0:
+        return jsonify({"error": "Informe o preço pretendido."}), 400
+    if p["preco_limite"] and preco >= p["preco_limite"]:
+        return jsonify({"error": "Este preço já está dentro da sua autonomia — pode lançar direto no orçamento."}), 400
+    ja = db.execute("""
+        SELECT id FROM liberacoes_preco WHERE deal_id = ? AND produto_id = ? AND user_id = ? AND status = 'pendente'
+    """, (deal_id, p["id"], g.current_user["id"])).fetchone()
+    if ja:
+        return jsonify({"error": "Já existe um pedido pendente para este produto neste negócio."}), 400
+    lid = new_id()
+    db.execute("""
+        INSERT INTO liberacoes_preco (id, deal_id, produto_id, user_id, preco_pedido, motivo, created_at)
+        VALUES (?,?,?,?,?,?,?)
+    """, (lid, deal_id, p["id"], g.current_user["id"], preco,
+          (body.get("motivo") or "").strip()[:400] or None, now_iso()))
+    audit("create", "liberacoes_preco", lid, {"deal": deal_id, "produto": p["nome"], "preco": preco})
+    db.commit()
+    return jsonify({"ok": True, "id": lid}), 201
+
+
+@app.get("/api/liberacoes")
+@login_required
+def listar_liberacoes():
+    """Admin: todos os pedidos (pendentes primeiro). Vendedor: só os seus."""
+    db = get_db()
+    clause, params = ("", [])
+    if g.current_user["role"] != "admin":
+        clause, params = (" WHERE l.user_id = ?", [g.current_user["id"]])
+    rows = db.execute(f"""
+        SELECT l.*, p.nome as produto_nome, p.preco_tabela, p.preco_limite,
+               u.nome as vendedor_nome, a.nome as admin_nome,
+               d.titulo as deal_titulo, c.nome as cliente_nome
+        FROM liberacoes_preco l
+        JOIN produtos p ON p.id = l.produto_id
+        JOIN users u ON u.id = l.user_id
+        LEFT JOIN users a ON a.id = l.admin_id
+        JOIN deals d ON d.id = l.deal_id
+        JOIN customers c ON c.id = d.customer_id
+        {clause}
+        ORDER BY CASE l.status WHEN 'pendente' THEN 0 ELSE 1 END, l.created_at DESC
+        LIMIT 100
+    """, params).fetchall()
+    return jsonify({"liberacoes": [dict(r) for r in rows], "admin": g.current_user["role"] == "admin"})
+
+
+@app.post("/api/liberacoes/<liberacao_id>/decidir")
+@login_required
+def decidir_liberacao(liberacao_id):
+    """Admin aprova (podendo ajustar o preço) ou nega o pedido."""
+    if g.current_user["role"] != "admin":
+        return jsonify({"error": "Apenas administradores decidem liberações de preço."}), 403
+    db = get_db()
+    l = db.execute("SELECT * FROM liberacoes_preco WHERE id = ?", (liberacao_id,)).fetchone()
+    if not l:
+        return jsonify({"error": "Pedido não encontrado."}), 404
+    if l["status"] != "pendente":
+        return jsonify({"error": f"Este pedido já foi {l['status']}."}), 400
+    body = request.get_json(force=True, silent=True) or {}
+    decisao = body.get("decisao")
+    if decisao not in ("aprovar", "negar"):
+        return jsonify({"error": "Decisão inválida."}), 400
+    obs = (body.get("observacao") or "").strip()[:400] or None
+    if decisao == "negar":
+        db.execute("""UPDATE liberacoes_preco SET status = 'negada', admin_id = ?, observacao = ?,
+                      decidido_em = ? WHERE id = ?""",
+                   (g.current_user["id"], obs, now_iso(), liberacao_id))
+    else:
+        try:
+            autorizado = round(float(body.get("preco_autorizado", l["preco_pedido"])), 2)
+        except (TypeError, ValueError):
+            autorizado = l["preco_pedido"]
+        if autorizado <= 0:
+            return jsonify({"error": "Preço autorizado inválido."}), 400
+        db.execute("""UPDATE liberacoes_preco SET status = 'aprovada', preco_autorizado = ?,
+                      admin_id = ?, observacao = ?, decidido_em = ? WHERE id = ?""",
+                   (autorizado, g.current_user["id"], obs, now_iso(), liberacao_id))
+    audit("update", "liberacoes_preco", liberacao_id, {"decisao": decisao})
+    db.commit()
+    return jsonify({"ok": True})
+
+
 @app.get("/api/deals/<deal_id>/orcamento")
 @login_required
 def ver_orcamento(deal_id):
@@ -1461,8 +1570,15 @@ def add_item_orcamento(deal_id):
         return jsonify({"error": "Informe o preço unitário (o produto não tem preço de tabela cadastrado)."}), 400
     # 🛡 TRAVA DO PREÇO-LIMITE
     limite = p["preco_limite"]
+    liberacao = None
     if limite and preco_unit < limite and g.current_user["role"] != "admin":
-        return jsonify({"error": f"Preço abaixo do limite de negociação deste produto (R$ {limite:.2f}). Peça a liberação a um administrador — só ele pode registrar abaixo do piso."}), 400
+        liberacao = _liberacao_vigente(db, deal_id, p["id"], g.current_user["id"])
+        if not liberacao or preco_unit < liberacao["preco_autorizado"]:
+            autorizado = f" Sua liberação vigente é de R$ {liberacao['preco_autorizado']:.2f}." if liberacao else ""
+            return jsonify({"error": f"Preço abaixo do limite de negociação (R$ {limite:.2f}).{autorizado}",
+                            "pode_pedir_liberacao": not liberacao,
+                            "produto_id": p["id"], "produto_nome": p["nome"],
+                            "preco_limite": limite}), 400
     usou_limite = 1 if (p["preco_tabela"] and preco_unit < p["preco_tabela"]) else 0
     iid = new_id()
     db.execute("""
@@ -1471,7 +1587,11 @@ def add_item_orcamento(deal_id):
     """, (iid, deal_id, p["id"], qtd, preco_unit, usou_limite, g.current_user["id"], now_iso()))
     audit("create", "deal_itens", iid, {"deal": deal_id, "produto": p["nome"], "qtd": qtd,
                                         "preco": preco_unit, "abaixo_tabela": bool(usou_limite),
-                                        "abaixo_limite": bool(limite and preco_unit < limite)})
+                                        "abaixo_limite": bool(limite and preco_unit < limite),
+                                        "liberacao": liberacao["id"] if liberacao else None})
+    if liberacao:
+        db.execute("UPDATE liberacoes_preco SET status = 'usada', usado_em = ? WHERE id = ?",
+                   (now_iso(), liberacao["id"]))
     calc = _sincronizar_valor_negocio(db, deal_id)
     db.commit()
     return jsonify({"ok": True, "id": iid, "total": calc["total"]}), 201
@@ -2235,11 +2355,38 @@ def list_lembretes():
             "periodo_tipo": m["periodo_tipo"], "data_fim": m["data_fim"],
             "clientes_sem_oferta": sem_oferta if eh_software else None,
         })
+    # 🙋 liberações de preço: admin vê os pendentes; vendedor vê as decisões
+    if g.current_user["role"] == "admin":
+        libs = db.execute("""
+            SELECT l.id, l.preco_pedido, l.status, p.nome as produto_nome, p.preco_limite,
+                   u.nome as vendedor_nome, c.nome as cliente_nome
+            FROM liberacoes_preco l
+            JOIN produtos p ON p.id = l.produto_id
+            JOIN users u ON u.id = l.user_id
+            JOIN deals d ON d.id = l.deal_id
+            JOIN customers c ON c.id = d.customer_id
+            WHERE l.status = 'pendente' ORDER BY l.created_at
+        """).fetchall()
+    else:
+        libs = db.execute("""
+            SELECT l.id, l.preco_autorizado as preco_pedido, l.status, p.nome as produto_nome,
+                   p.preco_limite, u.nome as vendedor_nome, c.nome as cliente_nome
+            FROM liberacoes_preco l
+            JOIN produtos p ON p.id = l.produto_id
+            JOIN users u ON u.id = l.user_id
+            JOIN deals d ON d.id = l.deal_id
+            JOIN customers c ON c.id = d.customer_id
+            WHERE l.user_id = ? AND l.status IN ('aprovada', 'negada')
+              AND l.decidido_em >= ?
+            ORDER BY l.decidido_em DESC
+        """, (g.current_user["id"],
+              (datetime.now(timezone.utc) - timedelta(days=3)).strftime("%Y-%m-%d %H:%M:%S"))).fetchall()
     return jsonify({
         "hoje": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
         "compromissos": [dict(r) for r in compromissos],
         "delegadas": [dict(r) for r in delegadas],
         "metas": metas_pendentes,
+        "liberacoes": [dict(r) for r in libs],
     })
 
 

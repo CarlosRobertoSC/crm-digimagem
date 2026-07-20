@@ -199,6 +199,25 @@ CREATE TABLE IF NOT EXISTS condicoes_pagamento (
     atualizado_em TEXT
 );
 
+-- 🙋 Liberações pontuais de preço abaixo do limite (v36)
+CREATE TABLE IF NOT EXISTS liberacoes_preco (
+    id               TEXT PRIMARY KEY,
+    deal_id          TEXT NOT NULL REFERENCES deals(id) ON DELETE CASCADE,
+    produto_id       TEXT NOT NULL REFERENCES produtos(id),
+    user_id          TEXT NOT NULL REFERENCES users(id),   -- quem pediu
+    preco_pedido     REAL NOT NULL,
+    motivo           TEXT,
+    status           TEXT NOT NULL DEFAULT 'pendente',      -- pendente|aprovada|negada|usada
+    preco_autorizado REAL,
+    admin_id         TEXT REFERENCES users(id),
+    observacao       TEXT,
+    created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    decidido_em      TEXT,
+    usado_em         TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_liberacoes_status ON liberacoes_preco(status);
+
 -- 🧾 Itens do orçamento de cada negócio (Fase 2)
 CREATE TABLE IF NOT EXISTS deal_itens (
     id          TEXT PRIMARY KEY,
