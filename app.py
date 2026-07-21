@@ -1396,6 +1396,7 @@ def _calcular_orcamento(db, d):
     condição de pagamento, total e situação do frete pela UF do cliente."""
     itens = [dict(r) for r in db.execute("""
         SELECT i.*, p.nome as produto_nome, p.embalagem, p.preco_tabela, p.preco_limite,
+               p.categoria, p.equipamento,
                l.status as liberacao_status, l.observacao as liberacao_obs
         FROM deal_itens i JOIN produtos p ON p.id = i.produto_id
         LEFT JOIN liberacoes_preco l ON l.id = i.liberacao_id
@@ -1561,8 +1562,9 @@ def ver_orcamento(deal_id):
         "SELECT * FROM condicoes_pagamento WHERE simples = 1 ORDER BY ordem").fetchall()]
     produtos = []
     for r in db.execute("""
-        SELECT id, nome, embalagem, preco_tabela, preco_limite, desconto_valor FROM produtos
-        WHERE ativo = 1 AND ofertavel != 0 ORDER BY nome
+        SELECT id, nome, embalagem, preco_tabela, preco_limite, desconto_valor,
+               categoria, equipamento
+        FROM produtos WHERE ativo = 1 AND ofertavel != 0 ORDER BY nome
     """).fetchall():
         item = dict(r)
         item["preco_venda"] = r["preco_tabela"]   # referência = preço de tabela
