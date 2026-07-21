@@ -2496,6 +2496,21 @@ function itensRemover(idx) {
   itensRenderLista();
 }
 
+let CONDICOES_CACHE = [];
+
+async function carregarCondicoes() {
+  try {
+    const data = await api("/base-comercial");
+    CONDICOES_CACHE = (data.condicoes || []).filter(cd => cd.simples && !cd.eh_nota);
+  } catch (e) { CONDICOES_CACHE = []; }
+}
+
+function condicaoSelecionada() {
+  const el = document.getElementById("modal_condicao_pagamento_id");
+  if (!el || !el.value) return null;
+  return CONDICOES_CACHE.find(cd => cd.id === el.value) || null;
+}
+
 function itensSincronizarValor(subtotal) {
   // 💰 espelha o subtotal dos itens no campo "Valor estimado"
   const campo = document.getElementById("modal_valor_estimado");
@@ -2518,15 +2533,23 @@ function itensRenderLista() {
   const box = document.getElementById("itensLista");
   if (!box) return;
   if (!MODAL_ITENS.length) { box.innerHTML = ""; itensSincronizarValor(0); return; }
+
   const subtotal = MODAL_ITENS.reduce((s, i) => s + (i.preco_ref * i.qtd), 0);
-  itensSincronizarValor(subtotal);
+  const cd = condicaoSelecionada();
+  const acrescimo = cd && cd.acrescimo_pct ? subtotal * cd.acrescimo_pct / 100 : 0;
+  itensSincronizarValor(subtotal + acrescimo);
   box.innerHTML = MODAL_ITENS.map((i, idx) => `
     <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;font-size:12px;padding:5px 2px;border-bottom:1px solid var(--border);">
       <span>📦 ${esc(i.nome)}${i.contexto ? ` <span style="color:${i.cor || "var(--accent)"};font-size:10px;font-weight:600;">· ${esc(i.contexto)}</span>` : ""} — ${i.qtd}x ${i.preco_unit === null ? "(tabela)" : fmtPreco(i.preco_unit)}</span>
       <span style="display:flex;gap:8px;align-items:center;white-space:nowrap;">${fmtPreco(i.preco_ref * i.qtd)}
         <button type="button" onclick="itensRemover(${idx})" style="background:none;border:none;cursor:pointer;color:var(--urgent);font-size:12px;" title="Remover">✕</button></span>
     </div>`).join("") +
-    `<div style="text-align:right;font-size:12px;margin-top:5px;"><b>Subtotal: ${fmtPreco(subtotal)}</b> <span style="color:var(--text-muted);font-size:10.5px;">· frete e pagamento no 🧾 depois de salvar</span></div>`;
+    `<div style="text-align:right;font-size:12px;margin-top:5px;">
+       <div style="color:var(--text-muted);">Subtotal: ${fmtPreco(subtotal)}</div>
+       ${acrescimo ? `<div style="color:#e8a33d;">Acréscimo ${cd.forma.toLowerCase().includes("cart") ? "do cartão" : ""} (${cd.acrescimo_pct}%): ${fmtPreco(acrescimo)}</div>` : ""}
+       <div style="font-size:13px;"><b>Total: ${fmtPreco(subtotal + acrescimo)}</b></div>
+       <span style="color:var(--text-muted);font-size:10.5px;">· frete calculado no 🧾 depois de salvar</span>
+     </div>`;
 }
 
 function editarProduto(id) {
@@ -3166,6 +3189,7 @@ const MODAL_CONFIG = {
           ["revele_momentos_frontier", "🎞 Software — Revele Momentos Frontier"],
         ] },
       { name: "itens", label: "🧾 Itens do orçamento (venda padrão) — busque o produto, informe quantidade e preço", type: "orcamento_itens" },
+      { name: "condicao_pagamento_id", label: "💳 Forma de pagamento", type: "condicao_pagto" },
       { name: "titulo", label: "Título do negócio (ex.: Reposição de cartuchos DX100)", type: "text", required: true },
       { name: "valor_estimado", label: "Valor estimado (R$) — preenchido sozinho pelos itens do orçamento", type: "number" },
       { name: "etapa_funil", label: "Etapa", type: "select",
@@ -3545,6 +3569,7 @@ async function openModal(kind) {
   let fields = cfg.fields;
   if (kind === "negocio") {
     await carregarProdutos(); // alimenta a busca do montador de itens
+    await carregarCondicoes(); // 💳 formas de pagamento do orçamento
     MODAL_ITENS = [];
     ITENS_SEL = null;
   }
@@ -3608,6 +3633,14 @@ async function openModal(kind) {
           <select id="modal_${f.name}_cc">${PAISES_TEL.map(([c, l]) => `<option value="${c}"${c === "55" ? " selected" : ""}>${l}</option>`).join("")}</select>
           <input type="tel" id="modal_${f.name}" placeholder="(48) 99999-9999" oninput="maskPhone(this)" ${f.required ? "required" : ""}>
         </div>
+      </div>`;
+    }
+    if (f.type === "condicao_pagto") {
+      return `<div class="field"><label>${f.label}</label>
+        <select id="modal_condicao_pagamento_id" onchange="itensRenderLista()">
+          <option value="">— definir depois —</option>
+          ${CONDICOES_CACHE.map(cd => `<option value="${esc(cd.id)}">${esc(cd.forma)} · ${esc(cd.condicao)}${cd.acrescimo_pct ? ` (+${cd.acrescimo_pct}%)` : ""}</option>`).join("")}
+        </select>
       </div>`;
     }
     if (f.type === "orcamento_itens") {

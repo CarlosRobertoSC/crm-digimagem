@@ -1147,6 +1147,14 @@ def create_deal():
             return jsonify({"error": "Produto do catálogo inválido ou inativo."}), 400
         produto_id = pr["id"]
     produto_qtd = (_int_or_none(body.get("produto_qtd")) or 1) if produto_id else None
+    # 💳 condição de pagamento escolhida já na criação (opcional)
+    cond_id = (body.get("condicao_pagamento_id") or "").strip() or None
+    cond_row = None
+    if cond_id:
+        cond_row = db.execute(
+            "SELECT * FROM condicoes_pagamento WHERE id = ? AND simples = 1", (cond_id,)).fetchone()
+        if not cond_row:
+            return jsonify({"error": "Forma de pagamento inválida."}), 400
     # 🧾 itens do orçamento na criação — validação COMPLETA antes de gravar
     itens_norm = []
     if body.get("itens"):
@@ -1209,7 +1217,11 @@ def create_deal():
                                                 "preco": it["preco"], "abaixo_tabela": bool(it["usou_limite"]),
                                                 "abaixo_limite": it["abaixo_limite"]})
         subtotal = round(sum(it["preco"] * it["qtd"] for it in itens_norm), 2)
-        db.execute("UPDATE deals SET valor_estimado = ? WHERE id = ?", (subtotal, did))
+        acrescimo = round(subtotal * (cond_row["acrescimo_pct"] or 0) / 100, 2) if cond_row else 0.0
+        db.execute("UPDATE deals SET valor_estimado = ? WHERE id = ?",
+                   (round(subtotal + acrescimo, 2), did))
+    if cond_id:
+        db.execute("UPDATE deals SET condicao_pagamento_id = ? WHERE id = ?", (cond_id, did))
     # 💰 valor inicial entra no histórico (valor_anterior NULL = "inicial").
     # Com itens no orçamento, o valor inicial É o subtotal deles — não o que
     # (não) foi digitado no campo manual.
@@ -1218,7 +1230,9 @@ def create_deal():
     except (TypeError, ValueError):
         valor_inicial = 0.0
     if itens_norm:
-        valor_inicial = round(sum(it["preco"] * it["qtd"] for it in itens_norm), 2)
+        _sub = round(sum(it["preco"] * it["qtd"] for it in itens_norm), 2)
+        _acr = round(_sub * (cond_row["acrescimo_pct"] or 0) / 100, 2) if cond_row else 0.0
+        valor_inicial = round(_sub + _acr, 2)
     db.execute("""
         INSERT INTO deal_value_history (id, deal_id, valor_anterior, valor_novo, user_id, created_at)
         VALUES (?,?,NULL,?,?,?)
