@@ -2496,11 +2496,30 @@ function itensRemover(idx) {
   itensRenderLista();
 }
 
+function itensSincronizarValor(subtotal) {
+  // 💰 espelha o subtotal dos itens no campo "Valor estimado"
+  const campo = document.getElementById("modal_valor_estimado");
+  if (!campo) return;
+  if (MODAL_ITENS.length) {
+    campo.value = subtotal.toFixed(2);
+    campo.readOnly = true;
+    campo.style.opacity = ".75";
+    campo.title = "Calculado pelos itens do orçamento — remova os itens para digitar um valor manual";
+  } else {
+    campo.readOnly = false;
+    campo.style.opacity = "";
+    campo.title = "";
+    if (campo.dataset.autoPreenchido === "1") campo.value = "";
+  }
+  campo.dataset.autoPreenchido = MODAL_ITENS.length ? "1" : "0";
+}
+
 function itensRenderLista() {
   const box = document.getElementById("itensLista");
   if (!box) return;
-  if (!MODAL_ITENS.length) { box.innerHTML = ""; return; }
+  if (!MODAL_ITENS.length) { box.innerHTML = ""; itensSincronizarValor(0); return; }
   const subtotal = MODAL_ITENS.reduce((s, i) => s + (i.preco_ref * i.qtd), 0);
+  itensSincronizarValor(subtotal);
   box.innerHTML = MODAL_ITENS.map((i, idx) => `
     <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;font-size:12px;padding:5px 2px;border-bottom:1px solid var(--border);">
       <span>📦 ${esc(i.nome)}${i.contexto ? ` <span style="color:${i.cor || "var(--accent)"};font-size:10px;font-weight:600;">· ${esc(i.contexto)}</span>` : ""} — ${i.qtd}x ${i.preco_unit === null ? "(tabela)" : fmtPreco(i.preco_unit)}</span>
@@ -3148,7 +3167,7 @@ const MODAL_CONFIG = {
         ] },
       { name: "itens", label: "🧾 Itens do orçamento (venda padrão) — busque o produto, informe quantidade e preço", type: "orcamento_itens" },
       { name: "titulo", label: "Título do negócio (ex.: Reposição de cartuchos DX100)", type: "text", required: true },
-      { name: "valor_estimado", label: "Valor estimado (R$) — se houver itens acima, o total deles é usado automaticamente", type: "number" },
+      { name: "valor_estimado", label: "Valor estimado (R$) — preenchido sozinho pelos itens do orçamento", type: "number" },
       { name: "etapa_funil", label: "Etapa", type: "select",
         options: [["novo_lead","Novo lead"], ["qualificacao","Qualificação"], ["proposta_enviada","Proposta enviada"], ["negociacao","Negociação"]] },
       { name: "data_prevista_fechamento", label: "Previsão de fechamento (opcional)", type: "date" },

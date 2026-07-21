@@ -1210,11 +1210,19 @@ def create_deal():
                                                 "abaixo_limite": it["abaixo_limite"]})
         subtotal = round(sum(it["preco"] * it["qtd"] for it in itens_norm), 2)
         db.execute("UPDATE deals SET valor_estimado = ? WHERE id = ?", (subtotal, did))
-    # 💰 valor inicial entra no histórico (valor_anterior NULL = "inicial")
+    # 💰 valor inicial entra no histórico (valor_anterior NULL = "inicial").
+    # Com itens no orçamento, o valor inicial É o subtotal deles — não o que
+    # (não) foi digitado no campo manual.
+    try:
+        valor_inicial = float(body.get("valor_estimado") or 0)
+    except (TypeError, ValueError):
+        valor_inicial = 0.0
+    if itens_norm:
+        valor_inicial = round(sum(it["preco"] * it["qtd"] for it in itens_norm), 2)
     db.execute("""
         INSERT INTO deal_value_history (id, deal_id, valor_anterior, valor_novo, user_id, created_at)
         VALUES (?,?,NULL,?,?,?)
-    """, (new_id(), did, body.get("valor_estimado", 0) or 0, user_id, now_iso()))
+    """, (new_id(), did, valor_inicial, user_id, now_iso()))
     db.execute("""
         INSERT INTO deal_stage_history (id, deal_id, etapa_anterior, etapa_nova, user_id, data_transicao)
         VALUES (?,?,NULL,?,?,?)
