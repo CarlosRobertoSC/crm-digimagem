@@ -2264,7 +2264,7 @@ function renderProdutos() {
           const foraOferta = p.ofertavel === 0;
           return `<tr style="${p.ativo ? "" : "opacity:.45;"}">
             <td>📦 ${esc(p.nome)}${p.embalagem ? `<br><span style="color:var(--text-muted);font-size:10px;">${esc(p.embalagem)}</span>` : ""}</td>
-            <td style="font-size:11px;">${esc(p.equipamento || p.categoria || "—")}</td>
+            <td style="font-size:11px;">${linhaProduto(p) ? seloProduto(p, "0") : esc(p.equipamento || p.categoria || "—")}</td>
             <td style="white-space:nowrap;"><b>${fmtPreco(p.preco_tabela)}</b></td>
             <td><input type="number" step="0.01" min="0" value="${p.desconto_valor || ""}" placeholder="0,00"
                  onchange="salvarDesconto('${esc(p.id)}', this.value)"
@@ -2427,6 +2427,30 @@ function linhaProduto(p) {
   return txt.length > 58 ? txt.slice(0, 56) + "…" : txt;
 }
 
+// 🎨 cor do selo POR LINHA de produto: dois itens de nome parecido ficam
+// visualmente diferentes na hora — é o reforço contra escolher o errado.
+const CORES_LINHA = [
+  { teste: /minilab|crystal archive/i, cor: "#f0a848" },   // âmbar  — minilab
+  { teste: /inkjet|dx100|de100|dx400/i, cor: "#4fc3f7" },  // ciano  — jato de tinta
+  { teste: /ask|térmic|termic|ribbon/i, cor: "#b98bf5" },  // violeta — térmica/ASK
+  { teste: /instax/i, cor: "#5ed1a0" },                    // verde  — Instax
+];
+
+function corProduto(p) {
+  const alvo = `${p.categoria || ""} ${p.equipamento || ""} ${p.nome || p.produto_nome || ""}`;
+  const achado = CORES_LINHA.find(c => c.teste.test(alvo));
+  return achado ? achado.cor : "var(--accent)";
+}
+
+function seloProduto(p, margemTopo) {
+  const txt = linhaProduto(p);
+  if (!txt) return "";
+  const cor = corProduto(p);
+  return `<span style="display:inline-block;margin-top:${margemTopo || "2px"};padding:1px 7px;border-radius:999px;
+    font-size:10px;font-weight:600;letter-spacing:.02em;color:${cor};
+    background:color-mix(in srgb, ${cor} 16%, transparent);border:1px solid color-mix(in srgb, ${cor} 45%, transparent);">🖨 ${esc(txt)}</span>`;
+}
+
 function itensFiltrar() {
   const box = document.getElementById("itensOpcoes");
   const q = (document.getElementById("itensBusca").value || "").toLowerCase().trim();
@@ -2439,7 +2463,7 @@ function itensFiltrar() {
     <div onclick="itensEscolher('${esc(p.id)}')"
       style="cursor:pointer;padding:7px 10px;border:1px solid var(--border);border-radius:8px;margin-top:4px;font-size:12px;background:var(--surface-raised);">
       <div>📦 ${esc(p.nome)} ${p.preco_tabela ? `<span style="color:var(--text-muted);">— ${fmtPreco(p.preco_tabela)}${p.desconto_valor ? ` <span style="color:#1fbf63;">· pode chegar a ${fmtPreco(p.preco_piso)}</span>` : ""}</span>` : ""}</div>
-      ${linhaProduto(p) ? `<div style="font-size:10px;color:var(--accent);opacity:.85;margin-top:1px;">🖨 ${esc(linhaProduto(p))}</div>` : ""}
+      ${seloProduto(p)}
     </div>`).join("")
     : `<div style="font-size:11px;color:var(--text-muted);padding:6px 2px;">Nenhum produto encontrado${PRODUTOS_CACHE.length ? "" : " — o catálogo está vazio (admin: importe a planilha em ◎ Metas)"}.</div>`;
 }
@@ -2450,7 +2474,7 @@ function itensEscolher(id) {
   document.getElementById("itensOpcoes").innerHTML = "";
   document.getElementById("itensBusca").value = "";
   document.getElementById("itensSelecionado").style.display = "flex";
-  document.getElementById("itensSelNome").innerHTML = `📦 ${esc(ITENS_SEL.nome)}${linhaProduto(ITENS_SEL) ? `<br><span style="font-size:10px;color:var(--accent);opacity:.85;">🖨 ${esc(linhaProduto(ITENS_SEL))}</span>` : ""}`;
+  document.getElementById("itensSelNome").innerHTML = `📦 ${esc(ITENS_SEL.nome)}<br>${seloProduto(ITENS_SEL)}`;
   document.getElementById("itensQtd").value = 1;
   document.getElementById("itensPreco").value = ITENS_SEL.preco_tabela ?? "";
 }
@@ -2459,7 +2483,7 @@ function itensAdicionar() {
   if (!ITENS_SEL) return;
   const qtd = Math.max(1, parseInt(document.getElementById("itensQtd").value, 10) || 1);
   const preco = parseFloat(document.getElementById("itensPreco").value);
-  MODAL_ITENS.push({ produto_id: ITENS_SEL.id, nome: ITENS_SEL.nome, contexto: linhaProduto(ITENS_SEL), qtd,
+  MODAL_ITENS.push({ produto_id: ITENS_SEL.id, nome: ITENS_SEL.nome, contexto: linhaProduto(ITENS_SEL), cor: corProduto(ITENS_SEL), qtd,
                      preco_unit: isNaN(preco) ? null : preco,
                      preco_ref: isNaN(preco) ? (ITENS_SEL.preco_tabela || 0) : preco });
   ITENS_SEL = null;
@@ -2479,7 +2503,7 @@ function itensRenderLista() {
   const subtotal = MODAL_ITENS.reduce((s, i) => s + (i.preco_ref * i.qtd), 0);
   box.innerHTML = MODAL_ITENS.map((i, idx) => `
     <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;font-size:12px;padding:5px 2px;border-bottom:1px solid var(--border);">
-      <span>📦 ${esc(i.nome)}${i.contexto ? ` <span style="color:var(--accent);opacity:.8;font-size:10px;">· ${esc(i.contexto)}</span>` : ""} — ${i.qtd}x ${i.preco_unit === null ? "(tabela)" : fmtPreco(i.preco_unit)}</span>
+      <span>📦 ${esc(i.nome)}${i.contexto ? ` <span style="color:${i.cor || "var(--accent)"};font-size:10px;font-weight:600;">· ${esc(i.contexto)}</span>` : ""} — ${i.qtd}x ${i.preco_unit === null ? "(tabela)" : fmtPreco(i.preco_unit)}</span>
       <span style="display:flex;gap:8px;align-items:center;white-space:nowrap;">${fmtPreco(i.preco_ref * i.qtd)}
         <button type="button" onclick="itensRemover(${idx})" style="background:none;border:none;cursor:pointer;color:var(--urgent);font-size:12px;" title="Remover">✕</button></span>
     </div>`).join("") +
@@ -2724,7 +2748,7 @@ async function renderOrcamento() {
   const podeEditar = o.pode_editar;
   const linhasItens = o.itens.map(i => `
     <tr>
-      <td>📦 ${esc(i.produto_nome)}${linhaProduto(i) ? `<br><span style="color:var(--accent);opacity:.85;font-size:10px;">🖨 ${esc(linhaProduto(i))}</span>` : ""}${i.embalagem ? `<br><span style="color:var(--text-muted);font-size:10px;">${esc(i.embalagem)}</span>` : ""}${i.usou_limite ? `<br><span style="color:#e8a33d;font-size:10px;">↓ abaixo da tabela (${fmtPreco(i.preco_tabela)})</span>` : ""}${!i.aprovado ? `<br><span style="color:var(--urgent);font-size:10px;">⏳ aguardando liberação do administrador${i.liberacao_status === "negada" ? ` · NEGADO${i.liberacao_obs ? `: ${esc(i.liberacao_obs)}` : ""}` : ""}</span>` : ""}</td>
+      <td>📦 ${esc(i.produto_nome)}${linhaProduto(i) ? `<br>${seloProduto(i)}` : ""}${i.embalagem ? `<br><span style="color:var(--text-muted);font-size:10px;">${esc(i.embalagem)}</span>` : ""}${i.usou_limite ? `<br><span style="color:#e8a33d;font-size:10px;">↓ abaixo da tabela (${fmtPreco(i.preco_tabela)})</span>` : ""}${!i.aprovado ? `<br><span style="color:var(--urgent);font-size:10px;">⏳ aguardando liberação do administrador${i.liberacao_status === "negada" ? ` · NEGADO${i.liberacao_obs ? `: ${esc(i.liberacao_obs)}` : ""}` : ""}</span>` : ""}</td>
       <td style="text-align:center;">${i.qtd}</td>
       <td style="white-space:nowrap;">${fmtPreco(i.preco_unit)}</td>
       <td style="white-space:nowrap;">${fmtPreco(i.preco_unit * i.qtd)}</td>
@@ -2781,7 +2805,7 @@ function orcFiltrar() {
     <div onclick="orcEscolher('${esc(p.id)}')"
       style="cursor:pointer;padding:7px 10px;border:1px solid var(--border);border-radius:8px;margin-top:4px;font-size:12px;background:var(--surface-raised);">
       <div>📦 ${esc(p.nome)} ${p.preco_venda ? `<span style="color:var(--text-muted);">— ${fmtPreco(p.preco_venda)}${p.preco_minimo && p.preco_minimo < p.preco_venda ? ` <span style="color:#1fbf63;">· até ${fmtPreco(p.preco_minimo)}</span>` : ""}</span>` : ""}</div>
-      ${linhaProduto(p) ? `<div style="font-size:10px;color:var(--accent);opacity:.85;margin-top:1px;">🖨 ${esc(linhaProduto(p))}</div>` : ""}
+      ${seloProduto(p)}
     </div>`).join("")
     : `<div style="font-size:11px;color:var(--text-muted);padding:6px 2px;">Nenhum produto encontrado.</div>`;
 }
@@ -2792,7 +2816,7 @@ function orcEscolher(id) {
   document.getElementById("orcOpcoes").innerHTML = "";
   document.getElementById("orcBusca").value = "";
   document.getElementById("orcSelecionado").style.display = "flex";
-  document.getElementById("orcSelNome").innerHTML = `📦 ${esc(ORC_SEL.nome)}${linhaProduto(ORC_SEL) ? `<br><span style="font-size:10px;color:var(--accent);opacity:.85;">🖨 ${esc(linhaProduto(ORC_SEL))}</span>` : ""}`;
+  document.getElementById("orcSelNome").innerHTML = `📦 ${esc(ORC_SEL.nome)}<br>${seloProduto(ORC_SEL)}`;
   document.getElementById("orcQtd").value = 1;
   document.getElementById("orcPreco").value = ORC_SEL.preco_tabela ?? "";
 }
