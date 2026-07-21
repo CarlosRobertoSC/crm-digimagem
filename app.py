@@ -1167,13 +1167,14 @@ def create_deal():
                 preco = round(float(it.get("preco_unit")), 2) if it.get("preco_unit") not in (None, "") else None
             except (TypeError, ValueError):
                 preco = None
+            preco_venda = _preco_venda(p)
             if preco is None:
-                preco = p["preco_tabela"]
+                preco = preco_venda
             if preco is None or preco <= 0:
                 return jsonify({"error": f"Item {idx} ({p['nome']}): informe o preço unitário."}), 400
-            limite = p["preco_limite"]
+            limite = _preco_piso(p)
             abaixo_limite = bool(limite and preco < limite and not eh_admin)
-            usou_limite = 1 if (p["preco_tabela"] and preco < p["preco_tabela"]) else 0
+            usou_limite = 1 if (preco_venda and preco < preco_venda) else 0
             itens_norm.append({"produto_id": p["id"], "nome": p["nome"], "qtd": qtd,
                                "preco": preco, "usou_limite": usou_limite,
                                "abaixo_limite": abaixo_limite})
@@ -1254,13 +1255,16 @@ def move_deal_stage(deal_id):
     if nova_etapa == "fechado_ganho":
         # 🛡 trava de faturamento: itens abaixo do limite precisam de liberação
         pendentes = db.execute("""
-            SELECT p.nome, i.preco_unit, p.preco_limite FROM deal_itens i
+            SELECT p.*, i.preco_unit as praticado FROM deal_itens i
             JOIN produtos p ON p.id = i.produto_id
             WHERE i.deal_id = ? AND i.aprovado = 0
         """, (deal_id,)).fetchall()
         if pendentes:
-            nomes = "; ".join(f"{r['nome']} a R$ {r['preco_unit']:.2f} (limite R$ {r['preco_limite']:.2f})"
-                              for r in pendentes[:3])
+            def _txt(r):
+                piso = _preco_piso(r)
+                minimo = f" (mínimo sem liberação: R$ {piso:.2f})" if piso is not None else ""
+                return f"{r['nome']} a R$ {r['praticado']:.2f}{minimo}"
+            nomes = "; ".join(_txt(r) for r in pendentes[:3])
             return jsonify({"error": f"Não é possível faturar: {len(pendentes)} item(ns) do orçamento aguardam liberação do administrador — {nomes}."}), 400
         status = "ganho"
         motivo_perda, motivo_perda_detalhe = None, None
@@ -1461,7 +1465,8 @@ def pedir_liberacao(deal_id):
         preco = None
     if not preco or preco <= 0:
         return jsonify({"error": "Informe o preço pretendido."}), 400
-    if p["preco_limite"] and preco >= p["preco_limite"]:
+    piso = _preco_piso(p)
+    if piso and preco >= piso:
         return jsonify({"error": "Este preço já está dentro da sua autonomia — pode lançar direto no orçamento."}), 400
     ja = db.execute("""
         SELECT id FROM liberacoes_preco WHERE deal_id = ? AND produto_id = ? AND user_id = ? AND status = 'pendente'
@@ -1554,14 +1559,17 @@ def ver_orcamento(deal_id):
     calc = _calcular_orcamento(db, d)
     condicoes = [dict(r) for r in db.execute(
         "SELECT * FROM condicoes_pagamento WHERE simples = 1 ORDER BY ordem").fetchall()]
-    produtos = [dict(r) for r in db.execute("""
-        SELECT id, nome, embalagem, preco_tabela, preco_limite FROM produtos
+    produtos = []
+    for r in db.execute("""
+        SELECT id, nome, embalagem, preco_tabela, preco_limite, desconto_valor FROM produtos
         WHERE ativo = 1 AND ofertavel != 0 ORDER BY nome
-    """).fetchall()]
-    if g.current_user["role"] != "admin":
-        for p in produtos:
-            pass  # vendedor precisa do limite para a trava avisar ANTES? Não: o servidor valida; o campo não é enviado
-        produtos = [{k: v for k, v in p.items() if k != "preco_limite"} for p in produtos]
+    """).fetchall():
+        item = dict(r)
+        item["preco_venda"] = r["preco_tabela"]   # referência = preço de tabela
+        item["preco_minimo"] = _preco_piso(r)     # até onde vai sem pedir liberação
+        if g.current_user["role"] != "admin":
+            item.pop("preco_limite", None)
+        produtos.append(item)
     return jsonify({**calc, "condicoes_disponiveis": condicoes, "produtos_disponiveis": produtos,
                     "pode_editar": g.current_user["role"] == "admin" or d["user_id"] == g.current_user["id"],
                     "admin": g.current_user["role"] == "admin"})
@@ -1589,12 +1597,13 @@ def add_item_orcamento(deal_id):
         preco_unit = round(float(preco_unit), 2)
     except (TypeError, ValueError):
         preco_unit = None
+    preco_venda = _preco_venda(p)
     if preco_unit is None:
-        preco_unit = p["preco_tabela"]
+        preco_unit = preco_venda
     if preco_unit is None or preco_unit <= 0:
         return jsonify({"error": "Informe o preço unitário (o produto não tem preço de tabela cadastrado)."}), 400
-    # 🛡 TRAVA DO PREÇO-LIMITE
-    limite = p["preco_limite"]
+    # 🛡 TRAVA: piso efetivo (limite original ou preço com desconto do admin)
+    limite = _preco_piso(p)
     liberacao = None
     aprovado = 1
     lib_id = None
@@ -1613,7 +1622,7 @@ def add_item_orcamento(deal_id):
             """, (lib_id, deal_id, p["id"], g.current_user["id"], preco_unit,
                   (body.get("motivo") or "").strip()[:400] or None, now_iso()))
             liberacao = None
-    usou_limite = 1 if (p["preco_tabela"] and preco_unit < p["preco_tabela"]) else 0
+    usou_limite = 1 if (preco_venda and preco_unit < preco_venda) else 0
     iid = new_id()
     db.execute("""
         INSERT INTO deal_itens (id, deal_id, produto_id, qtd, preco_unit, usou_limite, aprovado,
@@ -2441,7 +2450,20 @@ def list_produtos():
         LEFT JOIN users u ON u.id = p.criado_por
         ORDER BY p.ativo DESC, p.nome
     """).fetchall()
-    return jsonify([dict(r) for r in rows])
+    saida = []
+    for r in rows:
+        item = dict(r)
+        item["preco_venda"] = _preco_venda(r)
+        item["preco_piso"] = _preco_piso(r)      # menor preço sem pedir liberação
+        item["desconto_pct"] = (round((r["desconto_valor"] or 0) / r["preco_tabela"] * 100, 1)
+                                if r["preco_tabela"] else None)
+        item["piso_pct"] = (round((r["preco_tabela"] - _preco_piso(r)) / r["preco_tabela"] * 100, 1)
+                            if r["preco_tabela"] and _preco_piso(r) is not None else None)
+        if g.current_user["role"] != "admin":
+            item.pop("preco_limite", None)
+            item.pop("preco_piso", None)
+        saida.append(item)
+    return jsonify(saida)
 
 
 @app.post("/api/produtos")
@@ -2484,6 +2506,28 @@ def toggle_produto(produto_id):
     audit("update", "produtos", produto_id, {"ativo": bool(novo)})
     db.commit()
     return jsonify({"ok": True, "ativo": bool(novo)})
+
+
+def _preco_venda(p):
+    """Preço de referência do produto: SEMPRE o preço de tabela importado.
+    O desconto autorizado pelo admin não muda o preço — ele amplia a margem
+    de negociação do vendedor (ver _preco_piso)."""
+    return p["preco_tabela"]
+
+
+def _preco_piso(p):
+    """💸 Piso que o vendedor alcança SEM pedir liberação.
+    - Sem desconto do admin: o preço-limite da planilha.
+    - Com desconto: tabela − desconto, quando isso amplia a autonomia.
+    O admin só pode ampliar a margem, nunca reduzi-la abaixo do limite."""
+    limite = p["preco_limite"]
+    tabela = p["preco_tabela"]
+    desconto = p["desconto_valor"] or 0
+    com_desconto = round(tabela - desconto, 2) if (tabela is not None and desconto) else None
+    candidatos = [v for v in (limite, com_desconto) if v is not None]
+    if not candidatos:
+        return tabela
+    return round(min(candidatos), 2)
 
 
 def _num(v):
@@ -2544,6 +2588,7 @@ def importar_base_comercial():
             ofertavel = 0 if "não ofertar" in status.lower() else 1
             existente = db.execute("SELECT id FROM produtos WHERE lower(nome) = lower(?)", (nome,)).fetchone()
             if existente:
+                # desconto_valor NÃO é tocado: é definição do admin no sistema
                 db.execute("""
                     UPDATE produtos SET seq = ?, categoria = ?, equipamento = ?, embalagem = ?,
                         preco_tabela = ?, preco_limite = ?, desconto_max = ?, status_comercial = ?,
@@ -2551,6 +2596,9 @@ def importar_base_comercial():
                     WHERE id = ?
                 """, (seq, categoria, equipamento, embalagem, preco_tabela, preco_limite,
                       desconto_max, status, ofertavel, existente["id"]))
+                if preco_tabela is not None:
+                    db.execute("UPDATE produtos SET desconto_valor = 0 WHERE id = ? AND desconto_valor >= ?",
+                               (existente["id"], preco_tabela))  # desconto obsoleto após queda de preço
                 resumo["produtos_atualizados"] += 1
             else:
                 db.execute("""
@@ -2652,6 +2700,35 @@ def update_produto(produto_id):
     audit("update", "produtos", produto_id, {"nome": nome})
     db.commit()
     return jsonify({"ok": True})
+
+
+@app.put("/api/produtos/<produto_id>/desconto")
+@login_required
+def definir_desconto_produto(produto_id):
+    """💸 Define o desconto em R$ de um produto (admin). O preço de venda e o
+    piso de negociação passam a considerá-lo automaticamente."""
+    if g.current_user["role"] != "admin":
+        return jsonify({"error": "Apenas administradores definem descontos."}), 403
+    db = get_db()
+    p = db.execute("SELECT * FROM produtos WHERE id = ?", (produto_id,)).fetchone()
+    if not p:
+        return jsonify({"error": "Produto não encontrado."}), 404
+    body = request.get_json(force=True, silent=True) or {}
+    try:
+        valor = round(float(body.get("desconto_valor") or 0), 2)
+    except (TypeError, ValueError):
+        return jsonify({"error": "Informe o desconto em reais (ex.: 50 para R$ 50,00)."}), 400
+    if valor < 0:
+        return jsonify({"error": "O desconto não pode ser negativo."}), 400
+    if p["preco_tabela"] is None and valor:
+        return jsonify({"error": "Este produto não tem preço de tabela — importe a planilha ou defina o preço antes."}), 400
+    if p["preco_tabela"] is not None and valor >= p["preco_tabela"]:
+        return jsonify({"error": f"O desconto precisa ser menor que o preço de tabela (R$ {p['preco_tabela']:.2f})."}), 400
+    db.execute("UPDATE produtos SET desconto_valor = ? WHERE id = ?", (valor, produto_id))
+    audit("update", "produtos", produto_id, {"desconto_valor": valor, "nome": p["nome"]})
+    db.commit()
+    p = db.execute("SELECT * FROM produtos WHERE id = ?", (produto_id,)).fetchone()
+    return jsonify({"ok": True, "preco_venda": _preco_venda(p), "preco_piso": _preco_piso(p)})
 
 
 @app.delete("/api/produtos/<produto_id>")
@@ -3613,6 +3690,7 @@ def migrate_missing_columns(conn):
             "desconto_max": "REAL",
             "status_comercial": "TEXT",
             "ofertavel": "INTEGER NOT NULL DEFAULT 1",
+            "desconto_valor": "REAL NOT NULL DEFAULT 0",
         },
     }
     for tabela, colunas in tabelas_e_colunas.items():
