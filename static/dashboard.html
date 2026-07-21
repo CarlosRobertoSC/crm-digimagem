@@ -2496,6 +2496,36 @@ function itensRemover(idx) {
   itensRenderLista();
 }
 
+async function renderResumoOrcamentoEdicao() {
+  const box = document.getElementById("resumoOrcamentoBox");
+  if (!box) return;
+  let o;
+  try { o = await api(`/deals/${SELECTED_EDIT_DEAL_ID}/orcamento`); }
+  catch (e) { box.innerHTML = `<span style="color:var(--text-muted);">Não foi possível carregar o orçamento.</span>`; return; }
+  const campoValor = document.getElementById("modal_valor_estimado");
+  if (!o.itens.length) {
+    box.innerHTML = `<span style="color:var(--text-muted);">Nenhum item lançado — este negócio usa valor manual.</span>
+      <button type="button" class="btn-mini" style="margin-left:8px;" onclick="closeModal(); abrirOrcamento('${esc(SELECTED_EDIT_DEAL_ID)}')">🧾 Abrir orçamento</button>`;
+    if (campoValor) { campoValor.readOnly = false; campoValor.style.opacity = ""; }
+    return;
+  }
+  box.innerHTML = `
+    ${o.itens.map(i => `<div style="display:flex;justify-content:space-between;gap:8px;padding:2px 0;">
+      <span>📦 ${esc(i.produto_nome)} — ${i.qtd}x ${fmtPreco(i.preco_unit)}${!i.aprovado ? ` <span style="color:var(--urgent);font-size:10px;">⏳</span>` : ""}</span>
+      <span style="white-space:nowrap;">${fmtPreco(i.preco_unit * i.qtd)}</span></div>`).join("")}
+    <div style="border-top:1px solid var(--border);margin-top:5px;padding-top:5px;display:flex;justify-content:space-between;">
+      <span style="color:var(--text-muted);">Subtotal</span><span>${fmtPreco(o.subtotal)}</span></div>
+    ${o.acrescimo ? `<div style="display:flex;justify-content:space-between;color:#e8a33d;"><span>Acréscimo</span><span>${fmtPreco(o.acrescimo)}</span></div>` : ""}
+    <div style="display:flex;justify-content:space-between;"><b>Total</b><b>${fmtPreco(o.total)}</b></div>
+    <button type="button" class="btn-mini" style="margin-top:7px;" onclick="closeModal(); abrirOrcamento('${esc(SELECTED_EDIT_DEAL_ID)}')">🧾 Editar itens no orçamento</button>`;
+  if (campoValor) {
+    campoValor.value = Number(o.total).toFixed(2);
+    campoValor.readOnly = true;
+    campoValor.style.opacity = ".75";
+    campoValor.title = "Calculado pelos itens do orçamento — edite os itens no 🧾 para alterar";
+  }
+}
+
 let CONDICOES_CACHE = [];
 
 async function carregarCondicoes() {
@@ -3218,17 +3248,20 @@ const MODAL_CONFIG = {
     title: "Editar negócio",
     fields: [
       { name: "titulo", label: "Título do negócio", type: "text", required: true },
+      { name: "resumo_orcamento", label: "🧾 Orçamento", type: "resumo_orcamento" },
+      { name: "condicao_pagamento_id", label: "💳 Forma de pagamento", type: "condicao_pagto" },
       { name: "valor_estimado", label: "Valor estimado (R$)", type: "number" },
-      { name: "produto_qtd", label: "📦 Quantidade de unidades (só p/ negócio com produto do catálogo)", type: "number" },
       { name: "data_prevista_fechamento", label: "Previsão de fechamento (opcional)", type: "date" },
     ],
     prefill: async () => {
       const d = await api(`/deals/${SELECTED_EDIT_DEAL_ID}`);
       return { titulo: d.titulo, valor_estimado: d.valor_estimado,
-               produto_qtd: d.produto_id ? (d.produto_qtd || 1) : "",
+               condicao_pagamento_id: d.condicao_pagamento_id || "",
                data_prevista_fechamento: d.data_prevista_fechamento };
     },
     submit: async (values) => {
+      delete values.resumo_orcamento;
+      values.condicao_pagamento_id = document.getElementById("modal_condicao_pagamento_id")?.value || "";
       values.valor_estimado = values.valor_estimado ? Number(values.valor_estimado) : 0;
       return api(`/deals/${SELECTED_EDIT_DEAL_ID}`, { method: "PUT", body: JSON.stringify(values) });
     },
@@ -3573,6 +3606,7 @@ async function openModal(kind) {
     MODAL_ITENS = [];
     ITENS_SEL = null;
   }
+  if (kind === "editar_negocio") await carregarCondicoes();
   if (kind === "transferir_cliente") {
     const usuarios = await api("/users");
     fields = cfg.fields.map(f => f.name === "novo_responsavel_id"
@@ -3635,6 +3669,11 @@ async function openModal(kind) {
         </div>
       </div>`;
     }
+    if (f.type === "resumo_orcamento") {
+      return `<div class="field"><label>${f.label}</label><div id="resumoOrcamentoBox"
+        style="font-size:12px;border:1px solid var(--border);border-radius:8px;padding:9px 11px;background:var(--surface-raised);">
+        <span style="color:var(--text-muted);">Carregando…</span></div></div>`;
+    }
     if (f.type === "condicao_pagto") {
       return `<div class="field"><label>${f.label}</label>
         <select id="modal_condicao_pagamento_id" onchange="itensRenderLista()">
@@ -3670,8 +3709,9 @@ async function openModal(kind) {
       <input type="${f.type}" id="modal_${f.name}" ${f.required ? "required" : ""}>
     </div>`;
   }).join("");
-  fieldsBox.dataset.activeFields = JSON.stringify(fields.filter(f => f.type !== "orcamento_itens").map(f => ({name: f.name, label: f.label, required: !!f.required, type: f.type})));
+  fieldsBox.dataset.activeFields = JSON.stringify(fields.filter(f => f.type !== "orcamento_itens" && f.type !== "resumo_orcamento").map(f => ({name: f.name, label: f.label, required: !!f.required, type: f.type})));
 
+  if (kind === "editar_negocio") setTimeout(renderResumoOrcamentoEdicao, 0);
   // pré-preenche valores quando o modal é de edição (ex: editar usuário)
   if (cfg.prefill) {
     const valoresAtuais = await cfg.prefill();

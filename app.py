@@ -1940,6 +1940,20 @@ def update_deal(deal_id):
     titulo = body.get("titulo", existing["titulo"])
     valor = body.get("valor_estimado", existing["valor_estimado"])
     data_prevista = body.get("data_prevista_fechamento", existing["data_prevista_fechamento"])
+    # 💳 forma de pagamento também é editável por aqui
+    if "condicao_pagamento_id" in body:
+        cid = (body.get("condicao_pagamento_id") or "").strip() or None
+        if cid and not db.execute(
+                "SELECT 1 FROM condicoes_pagamento WHERE id = ? AND simples = 1", (cid,)).fetchone():
+            return jsonify({"error": "Forma de pagamento inválida."}), 400
+        db.execute("UPDATE deals SET condicao_pagamento_id = ? WHERE id = ?", (cid, deal_id))
+        existing = db.execute("SELECT * FROM deals WHERE id = ?", (deal_id,)).fetchone()
+    # 🛡 com itens no orçamento, o valor é DERIVADO deles: ignora o valor
+    # digitado (evita número na tela divergindo do orçamento real)
+    tem_itens = db.execute("SELECT 1 FROM deal_itens WHERE deal_id = ? LIMIT 1", (deal_id,)).fetchone()
+    if tem_itens:
+        calc = _calcular_orcamento(db, existing)
+        valor = calc["total"]
     produto_qtd = existing["produto_qtd"]
     if existing["produto_id"] and "produto_qtd" in body:
         produto_qtd = _int_or_none(body.get("produto_qtd")) or 1
