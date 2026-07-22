@@ -3677,6 +3677,117 @@ def report_margem():
                     "vendedores": resultado, "totais": totais})
 
 
+@app.get("/api/reports/vendas-produto")
+@login_required
+def report_vendas_produto():
+    """📦 VENDAS POR PRODUTO — quanto saiu de cada item/linha no período.
+    Base para decisão de estoque e negociação com fornecedor. Soma, sobre os
+    itens de negócios ganhos, a quantidade e o faturamento por produto,
+    agrupável também por linha/equipamento."""
+    db = get_db()
+    try:
+        inicio, fim = parse_period_from_request()
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    if not inicio:
+        return jsonify({"error": "Informe o parâmetro 'periodo' para este relatório."}), 400
+    clause, params = report_scope_clause("d.user_id")
+
+    rows = db.execute(f"""
+        SELECT p.id, p.nome, p.categoria, p.equipamento,
+               SUM(i.qtd) as qtd, SUM(i.qtd * i.preco_unit) as faturamento,
+               COUNT(DISTINCT d.id) as negocios
+        FROM deal_itens i
+        JOIN deals d ON d.id = i.deal_id
+        JOIN produtos p ON p.id = i.produto_id
+        WHERE d.status = 'ganho' AND d.categoria = 'padrao'
+          AND d.etapa_atualizada_em BETWEEN ? AND ? {clause}
+        GROUP BY p.id
+        ORDER BY faturamento DESC
+    """, [inicio, fim + " 23:59:59"] + params).fetchall()
+
+    produtos = [dict(r) for r in rows]
+    # agrupamento por linha (categoria + equipamento)
+    por_linha = {}
+    for p in produtos:
+        chave = " · ".join(x for x in [(p["categoria"] or "").replace("Papel ", ""), p["equipamento"]] if x) or "Sem linha"
+        g = por_linha.setdefault(chave, {"linha": chave, "qtd": 0, "faturamento": 0.0, "produtos": 0})
+        g["qtd"] += p["qtd"]
+        g["faturamento"] += p["faturamento"]
+        g["produtos"] += 1
+    linhas = sorted(por_linha.values(), key=lambda x: x["faturamento"], reverse=True)
+    for l in linhas:
+        l["faturamento"] = round(l["faturamento"], 2)
+    for p in produtos:
+        p["faturamento"] = round(p["faturamento"], 2)
+
+    total = round(sum(p["faturamento"] for p in produtos), 2)
+    return jsonify({"periodo": {"inicio": inicio, "fim": fim},
+                    "produtos": produtos, "linhas": linhas, "total": total})
+
+
+# 🎯 Kit sugerido por equipamento — mapa slug do cliente -> palavras-chave
+# que aparecem na coluna "equipamento" dos produtos da planilha.
+KIT_EQUIP_KEYWORDS = {
+    "ask300": ["ASK-300"],
+    "ask400": ["ASK-400"],
+    "dx100": ["DX100"],
+    "de100": ["DE100"],
+    "de100xd": ["DE100XD", "DE100-XD"],
+    "dx400": ["DX400"],
+    "minilab": ["Crystal Archive", "Archive Pro", "RA60", "Fujicolor", "CP49", "Starter", "FCS"],
+    "instax": ["Instax"],
+}
+
+
+@app.get("/api/customers/<customer_id>/kit-sugerido")
+@login_required
+def kit_sugerido(customer_id):
+    """🎯 Sugere produtos compatíveis com os equipamentos do cliente.
+    Cruza os equipamentos cadastrados na ficha com a linha de cada produto
+    ofertável, e sugere quantidade com base no consumo mensal (rolos/mês)."""
+    db = get_db()
+    c = db.execute("SELECT * FROM customers WHERE id = ?", (customer_id,)).fetchone()
+    if not c:
+        return jsonify({"error": "Cliente não encontrado."}), 404
+    # RBAC: vendedor só na própria carteira
+    if g.current_user["role"] != "admin" and c["responsavel_id"] != g.current_user["id"]:
+        return jsonify({"error": "Este cliente não está na sua carteira."}), 403
+
+    equipamentos = normalizar_equipamentos(c["equipamentos"])
+    slugs = json.loads(equipamentos) if equipamentos else []
+    if not slugs:
+        return jsonify({"equipamentos": [], "grupos": [],
+                        "aviso": "Cadastre os equipamentos do cliente na ficha para receber sugestões de kit."})
+
+    rolos = c["rolos_mes_media"] or 0
+    grupos = []
+    for slug in slugs:
+        keywords = KIT_EQUIP_KEYWORDS.get(slug, [])
+        if not keywords:
+            continue
+        like = " OR ".join("(p.equipamento LIKE ? OR p.categoria LIKE ?)" for _ in keywords)
+        params = []
+        for k in keywords:
+            params += [f"%{k}%", f"%{k}%"]
+        prods = db.execute(f"""
+            SELECT p.id, p.nome, p.categoria, p.equipamento, p.preco_tabela, p.embalagem, p.desconto_valor
+            FROM produtos p WHERE p.ativo = 1 AND p.ofertavel != 0 AND ({like})
+            ORDER BY p.preco_tabela DESC
+        """, params).fetchall()
+        itens = []
+        for p in prods:
+            itens.append({**dict(p),
+                          "qtd_sugerida": rolos if rolos else 1})
+        if itens:
+            grupos.append({"equipamento_slug": slug,
+                           "equipamento_nome": EQUIPAMENTOS.get(slug, slug),
+                           "produtos": itens})
+    return jsonify({"equipamentos": [EQUIPAMENTOS.get(s, s) for s in slugs],
+                    "rolos_mes": rolos, "grupos": grupos,
+                    "aviso": None if grupos else "Nenhum produto do catálogo corresponde aos equipamentos deste cliente."})
+
+
 @app.get("/api/reports/origem-leads")
 @login_required
 def report_origem_leads():

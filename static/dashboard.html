@@ -802,6 +802,7 @@
         <div class="report-tab-btn" data-tab="pipeline" onclick="setReportTab('pipeline')">Pipeline</div>
         <div class="report-tab-btn" data-tab="desempenho" onclick="setReportTab('desempenho')">Desempenho da Equipe</div>
         <div class="report-tab-btn" data-tab="margem" onclick="setReportTab('margem')">💸 Tabela vs. Limite</div>
+        <div class="report-tab-btn" data-tab="produtos" onclick="setReportTab('produtos')">📦 Vendas por Produto</div>
         <div class="report-tab-btn" data-tab="perdas" onclick="setReportTab('perdas')">Motivos de Perda</div>
         <div class="report-tab-btn" data-tab="atividades" onclick="setReportTab('atividades')">Atividades</div>
         <div class="report-tab-btn" data-tab="forecast" onclick="setReportTab('forecast')">Forecast</div>
@@ -839,6 +840,20 @@
     <div class="modal-actions">
       <button class="modal-cancel" onclick="closeModal()">Cancelar</button>
       <button class="btn-primary" onclick="submitModal()">Salvar</button>
+    </div>
+  </div>
+</div>
+
+<!-- ========== MODAL: KIT SUGERIDO (Fase 3) ========== -->
+<div class="modal-overlay" id="kitOverlay">
+  <div class="modal-box hist-box">
+    <div class="hist-head">
+      <h3 style="margin-bottom:0;">🎯 Kit sugerido</h3>
+      <div class="hist-sub" id="kitSub"></div>
+    </div>
+    <div style="padding:14px 18px;max-height:60vh;overflow:auto;" id="kitCorpo"></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;padding:12px 18px;border-top:1px solid var(--border);">
+      <button class="btn-mini" onclick="document.getElementById('kitOverlay').classList.remove('open')">Fechar</button>
     </div>
   </div>
 </div>
@@ -1342,7 +1357,7 @@ async function showCustomer(customerId) {
   } else {
     dealsHtml += `<div style="color:var(--text-muted);font-size:12px;">Nenhum negócio ainda.</div>`;
   }
-  dealsHtml += c.ativo ? `<button class="btn-secondary" onclick="openModal('negocio')">+ Novo negócio</button></div>` : `</div>`;
+  dealsHtml += c.ativo ? `<button class="btn-secondary" onclick="openModal('negocio')">+ Novo negócio</button> <button class="btn-secondary" onclick="abrirKitSugerido('${c.id}')" title="Produtos compatíveis com os equipamentos deste cliente">🎯 Kit sugerido</button></div>` : `</div>`;
 
   let tasksHtml = `<div style="margin-top:14px;"><div class="panel-sub" style="margin-bottom:6px;">Compromissos</div>`;
   if (data.tasks.length) {
@@ -1971,6 +1986,7 @@ async function loadRelatoriosView() {
     if (REPORT_TAB === "pipeline") await renderReportPipeline(content, periodo);
     else if (REPORT_TAB === "desempenho") await renderReportDesempenho(content, periodo);
     else if (REPORT_TAB === "margem") await renderReportMargem(content, periodo);
+    else if (REPORT_TAB === "produtos") await renderReportProdutos(content, periodo);
     else if (REPORT_TAB === "perdas") await renderReportPerdas(content, periodo);
     else if (REPORT_TAB === "atividades") await renderReportAtividades(content, periodo);
     else if (REPORT_TAB === "forecast") await renderReportForecast(content, periodo);
@@ -1979,6 +1995,49 @@ async function loadRelatoriosView() {
   } catch (err) {
     content.innerHTML = `<div class="placeholder-panel">${esc(err.message || "Erro ao carregar relatório.")}</div>`;
   }
+}
+
+async function renderReportProdutos(content, periodo) {
+  if (!periodo) { content.innerHTML = `<div class="placeholder-panel">Selecione um período.</div>`; return; }
+  const data = await api(`/reports/vendas-produto?${periodo}${reportScopeParams()}`);
+  if (!data.produtos.length) {
+    content.innerHTML = `<div class="placeholder-panel">Nenhum item vendido neste período.<br><span style="font-size:11px;">(usa os itens do orçamento de negócios ganhos)</span></div>`;
+    return;
+  }
+  const fmt = v => "R$ " + Number(v).toLocaleString("pt-BR", { minimumFractionDigits: 2 });
+  const maxFat = Math.max(...data.produtos.map(p => p.faturamento));
+  content.innerHTML = `
+    <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">
+      Quantidade e faturamento por produto em negócios <b>ganhos</b>. Total do período: <b>${fmt(data.total)}</b>.
+    </div>
+    <div style="font-family:var(--font-mono);font-size:10.5px;color:var(--text-muted);text-transform:uppercase;margin-bottom:6px;">Por linha de produto</div>
+    <table class="report-table" style="margin-bottom:20px;">
+      <thead><tr><th>Linha</th><th>Qtd</th><th>Produtos</th><th>Faturamento</th></tr></thead>
+      <tbody>${data.linhas.map(l => `<tr>
+        <td>${seloLinha(l.linha)}</td>
+        <td style="text-align:center;">${l.qtd}</td>
+        <td style="text-align:center;color:var(--text-muted);">${l.produtos}</td>
+        <td style="white-space:nowrap;"><b>${fmt(l.faturamento)}</b></td>
+      </tr>`).join("")}</tbody>
+    </table>
+    <div style="font-family:var(--font-mono);font-size:10.5px;color:var(--text-muted);text-transform:uppercase;margin-bottom:6px;">Produto a produto</div>
+    <table class="report-table">
+      <thead><tr><th>Produto</th><th>Qtd</th><th>Negócios</th><th>Faturamento</th></tr></thead>
+      <tbody>${data.produtos.map(p => `<tr>
+        <td>📦 ${esc(p.nome)}${linhaProduto(p) ? `<br>${seloProduto(p, "1px")}` : ""}</td>
+        <td style="text-align:center;font-weight:600;">${p.qtd}</td>
+        <td style="text-align:center;color:var(--text-muted);">${p.negocios}</td>
+        <td style="white-space:nowrap;">${fmt(p.faturamento)}
+          <div class="report-bar-track" style="margin-top:3px;"><div class="report-bar-fill" style="width:${Math.max(4, Math.round(p.faturamento / maxFat * 100))}%;"></div></div></td>
+      </tr>`).join("")}</tbody>
+    </table>`;
+}
+
+function seloLinha(nomeLinha) {
+  // reaproveita a lógica de cor por linha
+  const fake = { categoria: nomeLinha, equipamento: nomeLinha, nome: nomeLinha };
+  const cor = corProduto(fake);
+  return `<span style="display:inline-block;padding:1px 8px;border-radius:999px;font-size:11px;font-weight:600;color:${cor};background:color-mix(in srgb, ${cor} 16%, transparent);border:1px solid color-mix(in srgb, ${cor} 45%, transparent);">${esc(nomeLinha)}</span>`;
 }
 
 async function renderReportMargem(content, periodo) {
@@ -2850,6 +2909,35 @@ async function carregarAnexoImg(img) {
 }
 
 let ORC_DEAL_ID = null;
+
+async function abrirKitSugerido(customerId) {
+  document.getElementById("kitOverlay").classList.add("open");
+  document.getElementById("kitCorpo").innerHTML = `<div style="color:var(--text-muted);font-size:12px;">Carregando…</div>`;
+  document.getElementById("kitSub").textContent = "";
+  let data;
+  try { data = await api(`/customers/${customerId}/kit-sugerido`); }
+  catch (e) { document.getElementById("kitCorpo").innerHTML = `<div style="color:var(--urgent);font-size:12px;">${esc(e.message)}</div>`; return; }
+  if (data.aviso) {
+    document.getElementById("kitCorpo").innerHTML = `<div style="color:var(--text-muted);font-size:12.5px;">${esc(data.aviso)}</div>`;
+    return;
+  }
+  document.getElementById("kitSub").textContent =
+    `Equipamentos: ${data.equipamentos.join(", ")}${data.rolos_mes ? ` · consumo ~${data.rolos_mes} rolos/mês` : ""}`;
+  const fmt = v => v ? "R$ " + Number(v).toLocaleString("pt-BR", { minimumFractionDigits: 2 }) : "—";
+  document.getElementById("kitCorpo").innerHTML = data.grupos.map(g => `
+    <div style="margin-bottom:14px;">
+      <div style="font-size:12px;font-weight:600;color:var(--accent);margin-bottom:6px;">🖨 ${esc(g.equipamento_nome)}</div>
+      <table class="report-table">
+        <thead><tr><th>Produto</th><th>Sugestão</th><th>Preço tabela</th></tr></thead>
+        <tbody>${g.produtos.map(p => `<tr>
+          <td>📦 ${esc(p.nome)}${p.embalagem ? `<br><span style="color:var(--text-muted);font-size:10px;">${esc(p.embalagem)}</span>` : ""}</td>
+          <td style="text-align:center;">${p.qtd_sugerida}x</td>
+          <td style="white-space:nowrap;">${fmt(p.preco_tabela)}</td>
+        </tr>`).join("")}</tbody>
+      </table>
+    </div>`).join("") +
+    `<div style="font-size:10.5px;color:var(--text-muted);margin-top:4px;">Sugestão baseada nos equipamentos da ficha e no consumo mensal. Use como roteiro ao montar o orçamento.</div>`;
+}
 let ORC_CLIENTE_WHATS = null;
 
 async function abrirOrcamento(dealId) {
