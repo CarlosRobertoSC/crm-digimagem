@@ -877,6 +877,7 @@
         <span class="hist-composer-hint" id="histComposerHint"></span>
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
           <button class="modal-cancel" id="histReabrirBtn" style="display:none;" onclick="reabrirNegocio(HIST_DEAL_ID, document.getElementById('histReabrirBtn').dataset.status)">↩ Reabrir negociação</button>
+          <button class="modal-cancel" id="histExcluirBtn" style="display:none;color:var(--urgent);" onclick="excluirNegocio(HIST_DEAL_ID, document.getElementById('histExcluirBtn').dataset.titulo)">🗑 Excluir negócio</button>
           <button class="modal-cancel" onclick="closeHistorico()">Fechar</button>
           <button class="btn-primary" onclick="salvarNotaHistorico()">💬 Registrar conversa</button>
         </div>
@@ -1184,6 +1185,7 @@ async function renderFunil(containerId, subId, showControls) {
             <button class="mini-btn" data-edit="${d.id}" title="Editar título/valor">✎</button>
             <button class="mini-btn ganho" data-action="ganho" data-deal="${d.id}" title="Marcar como ganho">✓</button>
             <button class="mini-btn perdido" data-action="perdido" data-deal="${d.id}" title="Marcar como perdido">✕</button>
+            <button class="mini-btn" data-excluir="${d.id}" data-titulo="${esc(d.titulo)}" title="Excluir negócio criado por engano" style="color:var(--urgent);">🗑</button>
           </div>` : ""}
         </div>`;
     });
@@ -1227,6 +1229,12 @@ async function renderFunil(containerId, subId, showControls) {
         e.stopPropagation();
         SELECTED_EDIT_DEAL_ID = btn.dataset.edit;
         openModal("editar_negocio");
+      });
+    });
+    cols.querySelectorAll("button[data-excluir]").forEach(btn => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        excluirNegocio(btn.dataset.excluir, btn.dataset.titulo);
       });
     });
   }
@@ -2998,6 +3006,9 @@ async function renderHistorico() {
   document.getElementById("histReabrirBtn").style.display = (d.status === "perdido" || d.status === "ganho") ? "" : "none";
   document.getElementById("histReabrirBtn").textContent = d.status === "ganho" ? "↩ Reabrir (marcado como ganho)" : "↩ Reabrir negociação";
   document.getElementById("histReabrirBtn").dataset.status = d.status;
+  const btnExcl = document.getElementById("histExcluirBtn");
+  btnExcl.style.display = d.status === "aberto" ? "" : "none";
+  btnExcl.dataset.titulo = d.titulo;
 
   const box = document.getElementById("histTimeline");
   if (!data.eventos.length) {
@@ -3140,7 +3151,9 @@ async function excluirNegocio(dealId, titulo) {
   if (!confirm(`Excluir o negócio "${titulo}"?\n\nUse isto apenas para negócios criados por engano. Esta ação é permanente e não pode ser desfeita.`)) return;
   try {
     await api(`/deals/${dealId}`, { method: "DELETE" });
+    if (HIST_DEAL_ID === dealId) closeHistorico();
     if (CURRENT_VIEW === "negocios") loadNegociosView();
+    if (CURRENT_VIEW === "relatorios") loadRelatoriosView();
     if (SELECTED_CUSTOMER_ID) showCustomer(SELECTED_CUSTOMER_ID);
     refreshAll();
   } catch (err) {
