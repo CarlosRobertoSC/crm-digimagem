@@ -1339,6 +1339,42 @@ def move_deal_stage(deal_id):
     return jsonify({"ok": True})
 
 
+@app.delete("/api/deals/<deal_id>")
+@login_required
+def delete_deal(deal_id):
+    """🗑 Exclui um negócio criado por engano. Regra de segurança: apaga
+    apenas o que é claramente um erro de digitação — negócio ABERTO, sem
+    conversa registrada no histórico. Negócio que já andou (tem anotações,
+    ou já foi ganho/perdido) NÃO se apaga: preserva a rastreabilidade e
+    impede que resultado seja maquiado. O admin, esse, pode excluir sempre."""
+    db = get_db()
+    d = db.execute("SELECT * FROM deals WHERE id = ?", (deal_id,)).fetchone()
+    if not d:
+        return jsonify({"error": "Negócio não encontrado."}), 404
+    eh_admin = g.current_user["role"] == "admin"
+    if not eh_admin and d["user_id"] != g.current_user["id"]:
+        return jsonify({"error": "Sem permissão para excluir este negócio."}), 403
+    if not eh_admin:
+        if d["status"] != "aberto":
+            return jsonify({"error": "Negócio já fechado não pode ser excluído. Se marcou por engano, use ↩ Reabrir; depois, se ainda quiser removê-lo, fale com um administrador."}), 400
+        tem_conversa = db.execute(
+            "SELECT 1 FROM deal_notes WHERE deal_id = ? LIMIT 1", (deal_id,)).fetchone()
+        if tem_conversa:
+            return jsonify({"error": "Este negócio já tem histórico de conversa registrado e não pode ser excluído por engano. Fale com um administrador se realmente precisa removê-lo."}), 400
+    # apaga o negócio e tudo que depende dele (itens, liberações, históricos)
+    for tabela in ("deal_itens", "liberacoes_preco", "deal_notes",
+                   "deal_stage_history", "deal_value_history"):
+        try:
+            db.execute(f"DELETE FROM {tabela} WHERE deal_id = ?", (deal_id,))
+        except Exception:
+            pass
+    db.execute("DELETE FROM deals WHERE id = ?", (deal_id,))
+    audit("delete", "deals", deal_id, {"titulo": d["titulo"], "status": d["status"],
+                                       "por_admin": eh_admin})
+    db.commit()
+    return jsonify({"ok": True})
+
+
 @app.post("/api/deals/<deal_id>/reabrir")
 @login_required
 def reopen_deal(deal_id):
@@ -1352,16 +1388,17 @@ def reopen_deal(deal_id):
         return jsonify({"error": "Negócio não encontrado."}), 404
     if g.current_user["role"] != "admin" and existing["user_id"] != g.current_user["id"]:
         return jsonify({"error": "Sem permissão para alterar este negócio."}), 403
-    if existing["status"] != "perdido":
-        return jsonify({"error": "Só é possível reabrir negócios marcados como perdidos."}), 400
+    if existing["status"] not in ("perdido", "ganho"):
+        return jsonify({"error": "Só é possível reabrir negócios já fechados (ganhos ou perdidos)."}), 400
 
+    etapa_fechamento = "fechado_perdido" if existing["status"] == "perdido" else "fechado_ganho"
     ultima_perda = db.execute("""
         SELECT * FROM deal_stage_history
-        WHERE deal_id = ? AND etapa_nova = 'fechado_perdido'
+        WHERE deal_id = ? AND etapa_nova = ?
         ORDER BY data_transicao DESC, rowid DESC LIMIT 1
-    """, (deal_id,)).fetchone()
+    """, (deal_id, etapa_fechamento)).fetchone()
 
-    # Volta para a etapa em que o negócio estava quando foi perdido
+    # Volta para a etapa em que o negócio estava antes de ser fechado
     etapa_retorno = "negociacao"
     if ultima_perda and ultima_perda["etapa_anterior"] in ETAPAS             and ultima_perda["etapa_anterior"] not in ("fechado_ganho", "fechado_perdido"):
         etapa_retorno = ultima_perda["etapa_anterior"]

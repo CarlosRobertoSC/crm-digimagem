@@ -876,7 +876,7 @@
       <div class="hist-composer-row">
         <span class="hist-composer-hint" id="histComposerHint"></span>
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
-          <button class="modal-cancel" id="histReabrirBtn" style="display:none;" onclick="reabrirNegocio(HIST_DEAL_ID)">↩ Reabrir negociação</button>
+          <button class="modal-cancel" id="histReabrirBtn" style="display:none;" onclick="reabrirNegocio(HIST_DEAL_ID, document.getElementById('histReabrirBtn').dataset.status)">↩ Reabrir negociação</button>
           <button class="modal-cancel" onclick="closeHistorico()">Fechar</button>
           <button class="btn-primary" onclick="salvarNotaHistorico()">💬 Registrar conversa</button>
         </div>
@@ -1295,7 +1295,7 @@ function renderFechados() {
       ${verTodos ? `<td>${esc(d.vendedor_nome || "—")}</td>` : ""}
       <td>R$ ${Number(d.valor_estimado).toLocaleString("pt-BR")}</td>
       <td><span class="pill ${d.status}">${d.status === "ganho" ? "Ganho" : "Perdido"}</span></td>
-      <td onclick="event.stopPropagation()" style="white-space:nowrap;"><button class="btn-mini" onclick="openHistorico('${d.id}')">💬 Histórico</button>${d.status === "perdido" ? ` <button class="btn-mini" onclick="reabrirNegocio('${d.id}')" title="Voltar este negócio para o funil de vendas">↩ Reabrir</button>` : ""}</td>
+      <td onclick="event.stopPropagation()" style="white-space:nowrap;"><button class="btn-mini" onclick="openHistorico('${d.id}')">💬 Histórico</button>${(d.status === "perdido" || d.status === "ganho") ? ` <button class="btn-mini" onclick="reabrirNegocio('${d.id}', '${d.status}')" title="Voltar este negócio para o funil de vendas">↩ Reabrir</button>` : ""}${d.status === "aberto" ? ` <button class="btn-mini" onclick="excluirNegocio('${d.id}', '${esc(d.titulo)}')" title="Excluir negócio criado por engano" style="color:var(--urgent);">🗑</button>` : ""}</td>
     </tr>
   `).join("");
 }
@@ -1913,7 +1913,7 @@ async function renderReportSoftware(content, periodo) {
           ${REPORT_VENDOR_FILTER === "all" ? `<td>${esc(n.vendedor_nome || "—")}</td>` : ""}
           <td>${fmt(n.valor_estimado)}</td>
           <td>${statusPill(n)}</td>
-          <td style="white-space:nowrap;"><button class="btn-mini" onclick="openHistorico('${esc(n.deal_id)}')">💬</button>${n.status === "perdido" ? ` <button class="btn-mini" onclick="reabrirNegocio('${esc(n.deal_id)}')">↩ Reabrir</button>` : ""}</td>
+          <td style="white-space:nowrap;"><button class="btn-mini" onclick="openHistorico('${esc(n.deal_id)}')">💬</button>${(n.status === "perdido" || n.status === "ganho") ? ` <button class="btn-mini" onclick="reabrirNegocio('${esc(n.deal_id)}', '${esc(n.status)}')">↩ Reabrir</button>` : ""}</td>
         </tr>`).join("")}</tbody>
     </table>`}
     ${data.cobertura && data.cobertura.length ? `
@@ -2995,7 +2995,9 @@ async function renderHistorico() {
   document.getElementById("histComposerHint").textContent =
     (comoGestor ? "★ comentando como gestor · " : "") +
     `será registrada na etapa atual: ${ETAPA_LABEL[d.etapa_funil] || d.etapa_funil}`;
-  document.getElementById("histReabrirBtn").style.display = d.status === "perdido" ? "" : "none";
+  document.getElementById("histReabrirBtn").style.display = (d.status === "perdido" || d.status === "ganho") ? "" : "none";
+  document.getElementById("histReabrirBtn").textContent = d.status === "ganho" ? "↩ Reabrir (marcado como ganho)" : "↩ Reabrir negociação";
+  document.getElementById("histReabrirBtn").dataset.status = d.status;
 
   const box = document.getElementById("histTimeline");
   if (!data.eventos.length) {
@@ -3118,8 +3120,11 @@ async function sugerirRecompra(customerId) {
   } catch (e) { /* sugestão é opcional: nunca trava o fluxo de ganho */ }
 }
 
-async function reabrirNegocio(dealId) {
-  if (!confirm("Reabrir esta negociação?\n\nEla volta para o funil na etapa em que estava antes de ser perdida, e o motivo da perda continua registrado na linha do tempo.")) return;
+async function reabrirNegocio(dealId, status) {
+  const msg = status === "ganho"
+    ? "Reabrir este negócio marcado como GANHO?\n\nEle volta ao funil e deixa de contar como venda até ser fechado de novo. Todo o histórico é preservado."
+    : "Reabrir esta negociação?\n\nEla volta para o funil na etapa em que estava antes de ser perdida, e o motivo da perda continua registrado na linha do tempo.";
+  if (!confirm(msg)) return;
   try {
     await api(`/deals/${dealId}/reabrir`, { method: "POST" });
     if (HIST_DEAL_ID === dealId) await renderHistorico(); // atualiza o modal aberto
@@ -3128,6 +3133,18 @@ async function reabrirNegocio(dealId) {
     refreshAll(); // negócio volta a aparecer no kanban
   } catch (err) {
     alert(err.message || "Não foi possível reabrir o negócio.");
+  }
+}
+
+async function excluirNegocio(dealId, titulo) {
+  if (!confirm(`Excluir o negócio "${titulo}"?\n\nUse isto apenas para negócios criados por engano. Esta ação é permanente e não pode ser desfeita.`)) return;
+  try {
+    await api(`/deals/${dealId}`, { method: "DELETE" });
+    if (CURRENT_VIEW === "negocios") loadNegociosView();
+    if (SELECTED_CUSTOMER_ID) showCustomer(SELECTED_CUSTOMER_ID);
+    refreshAll();
+  } catch (err) {
+    alert(err.message || "Não foi possível excluir o negócio.");
   }
 }
 
