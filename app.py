@@ -3599,6 +3599,84 @@ def report_software():
                     "cobertura": cobertura})
 
 
+@app.get("/api/reports/margem")
+@login_required
+def report_margem():
+    """📊 TABELA vs. LIMITE por vendedor — quanto de margem cada um entrega.
+    Sobre os ITENS de negócios GANHOS no período, calcula: faturamento no
+    preço de tabela, faturamento praticado, desconto concedido (R$ e %),
+    quantos itens saíram na tabela, abaixo da tabela, e abaixo do limite
+    (que exigiram liberação). É a leitura de margem que não existia antes."""
+    db = get_db()
+    try:
+        inicio, fim = parse_period_from_request()
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    if not inicio:
+        return jsonify({"error": "Informe o parâmetro 'periodo' para este relatório."}), 400
+    clause, params = report_scope_clause("d.user_id")
+
+    rows = db.execute(f"""
+        SELECT d.user_id, u.nome as vendedor_nome,
+               i.qtd, i.preco_unit, i.usou_limite,
+               p.preco_tabela, p.preco_limite, p.nome as produto_nome,
+               i.liberacao_id
+        FROM deal_itens i
+        JOIN deals d ON d.id = i.deal_id
+        LEFT JOIN users u ON u.id = d.user_id
+        JOIN produtos p ON p.id = i.produto_id
+        WHERE d.status = 'ganho' AND d.categoria = 'padrao'
+          AND d.etapa_atualizada_em BETWEEN ? AND ? {clause}
+    """, [inicio, fim + " 23:59:59"] + params).fetchall()
+
+    por_vend = {}
+    for r in rows:
+        vid = r["user_id"]
+        v = por_vend.setdefault(vid, {
+            "vendedor_id": vid, "vendedor_nome": r["vendedor_nome"],
+            "fat_tabela": 0.0, "fat_praticado": 0.0, "itens": 0,
+            "itens_tabela": 0, "itens_desconto": 0, "itens_liberacao": 0,
+        })
+        qtd = r["qtd"] or 1
+        preco_tab = r["preco_tabela"] if r["preco_tabela"] is not None else r["preco_unit"]
+        v["fat_tabela"] += preco_tab * qtd
+        v["fat_praticado"] += r["preco_unit"] * qtd
+        v["itens"] += 1
+        if r["liberacao_id"]:
+            v["itens_liberacao"] += 1
+        if r["usou_limite"]:
+            v["itens_desconto"] += 1
+        else:
+            v["itens_tabela"] += 1
+
+    resultado = []
+    tot = {"fat_tabela": 0.0, "fat_praticado": 0.0, "itens": 0,
+           "itens_tabela": 0, "itens_desconto": 0, "itens_liberacao": 0}
+    for v in por_vend.values():
+        desconto = round(v["fat_tabela"] - v["fat_praticado"], 2)
+        pct = round(desconto / v["fat_tabela"] * 100, 1) if v["fat_tabela"] else 0.0
+        resultado.append({
+            **v,
+            "fat_tabela": round(v["fat_tabela"], 2),
+            "fat_praticado": round(v["fat_praticado"], 2),
+            "desconto_total": desconto,
+            "desconto_pct": pct,
+            "pct_tabela": round(v["itens_tabela"] / v["itens"] * 100, 1) if v["itens"] else 0,
+        })
+        for k in tot:
+            tot[k] += v[k]
+    resultado.sort(key=lambda r: r["desconto_pct"], reverse=True)  # quem mais dá desconto primeiro
+
+    tot_desc = round(tot["fat_tabela"] - tot["fat_praticado"], 2)
+    totais = {
+        **{k: round(tot[k], 2) if "fat" in k else tot[k] for k in tot},
+        "desconto_total": tot_desc,
+        "desconto_pct": round(tot_desc / tot["fat_tabela"] * 100, 1) if tot["fat_tabela"] else 0.0,
+    }
+    return jsonify({"periodo": {"inicio": inicio, "fim": fim},
+                    "vendedores": resultado, "totais": totais})
+
+
 @app.get("/api/reports/origem-leads")
 @login_required
 def report_origem_leads():

@@ -364,6 +364,9 @@
   }
 
   .report-tabs{display:flex;gap:4px;margin-bottom:18px;flex-wrap:wrap;}
+  .mini-card{background:var(--surface-raised);border:1px solid var(--border);border-radius:10px;padding:12px 14px;}
+  .mini-card-label{font-size:10.5px;color:var(--text-muted);text-transform:uppercase;font-family:var(--font-mono);margin-bottom:4px;}
+  .mini-card-value{font-size:18px;font-weight:600;}
   .report-tab-btn{
     font-size:12.5px;padding:9px 14px;border-radius:9px 9px 0 0;background:var(--surface-raised);
     color:var(--text-muted);cursor:pointer;border:1px solid var(--border);border-bottom:none;
@@ -798,6 +801,7 @@
       <div class="report-tabs">
         <div class="report-tab-btn" data-tab="pipeline" onclick="setReportTab('pipeline')">Pipeline</div>
         <div class="report-tab-btn" data-tab="desempenho" onclick="setReportTab('desempenho')">Desempenho da Equipe</div>
+        <div class="report-tab-btn" data-tab="margem" onclick="setReportTab('margem')">💸 Tabela vs. Limite</div>
         <div class="report-tab-btn" data-tab="perdas" onclick="setReportTab('perdas')">Motivos de Perda</div>
         <div class="report-tab-btn" data-tab="atividades" onclick="setReportTab('atividades')">Atividades</div>
         <div class="report-tab-btn" data-tab="forecast" onclick="setReportTab('forecast')">Forecast</div>
@@ -1966,6 +1970,7 @@ async function loadRelatoriosView() {
   try {
     if (REPORT_TAB === "pipeline") await renderReportPipeline(content, periodo);
     else if (REPORT_TAB === "desempenho") await renderReportDesempenho(content, periodo);
+    else if (REPORT_TAB === "margem") await renderReportMargem(content, periodo);
     else if (REPORT_TAB === "perdas") await renderReportPerdas(content, periodo);
     else if (REPORT_TAB === "atividades") await renderReportAtividades(content, periodo);
     else if (REPORT_TAB === "forecast") await renderReportForecast(content, periodo);
@@ -1974,6 +1979,49 @@ async function loadRelatoriosView() {
   } catch (err) {
     content.innerHTML = `<div class="placeholder-panel">${esc(err.message || "Erro ao carregar relatório.")}</div>`;
   }
+}
+
+async function renderReportMargem(content, periodo) {
+  if (!periodo) { content.innerHTML = `<div class="placeholder-panel">Selecione um período.</div>`; return; }
+  const data = await api(`/reports/margem?${periodo}${reportScopeParams()}`);
+  const vs = data.vendedores;
+  if (!vs.length) {
+    content.innerHTML = `<div class="placeholder-panel">Nenhum item de orçamento em negócios ganhos neste período.<br><span style="font-size:11px;">(este relatório usa os itens do orçamento; negócios antigos sem itens não entram)</span></div>`;
+    return;
+  }
+  const fmt = v => "R$ " + Number(v).toLocaleString("pt-BR", { minimumFractionDigits: 2 });
+  const t = data.totais;
+  const corPct = p => p >= 8 ? "var(--urgent)" : (p >= 4 ? "#e8a33d" : "#1fbf63");
+  content.innerHTML = `
+    <div style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">
+      Sobre os itens de negócios <b>ganhos</b> no período. "Desconto" é o quanto o faturamento ficou abaixo do preço de tabela.
+    </div>
+    <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px;">
+      <div class="mini-card" style="flex:1;min-width:150px;"><div class="mini-card-label">Faturamento na tabela</div><div class="mini-card-value">${fmt(t.fat_tabela)}</div></div>
+      <div class="mini-card" style="flex:1;min-width:150px;"><div class="mini-card-label">Faturamento praticado</div><div class="mini-card-value">${fmt(t.fat_praticado)}</div></div>
+      <div class="mini-card" style="flex:1;min-width:150px;"><div class="mini-card-label">Desconto concedido</div><div class="mini-card-value" style="color:${corPct(t.desconto_pct)};">${fmt(t.desconto_total)} <span style="font-size:12px;">(${t.desconto_pct.toString().replace(".", ",")}%)</span></div></div>
+    </div>
+    <table class="report-table">
+      <thead><tr>
+        <th>Vendedor</th><th>Fat. tabela</th><th>Fat. praticado</th>
+        <th>Desconto</th><th>%</th><th>Itens</th><th>Na tabela</th><th>c/ liberação</th>
+      </tr></thead>
+      <tbody>
+        ${vs.map(v => `<tr>
+          <td><b>${esc(v.vendedor_nome || "—")}</b></td>
+          <td style="white-space:nowrap;">${fmt(v.fat_tabela)}</td>
+          <td style="white-space:nowrap;">${fmt(v.fat_praticado)}</td>
+          <td style="white-space:nowrap;">${fmt(v.desconto_total)}</td>
+          <td style="white-space:nowrap;color:${corPct(v.desconto_pct)};font-weight:600;">${v.desconto_pct.toString().replace(".", ",")}%</td>
+          <td style="text-align:center;">${v.itens}</td>
+          <td style="text-align:center;">${v.itens_tabela} <span style="color:var(--text-muted);font-size:10px;">(${v.pct_tabela.toString().replace(".", ",")}%)</span></td>
+          <td style="text-align:center;color:${v.itens_liberacao ? "#e8a33d" : "var(--text-muted)"};">${v.itens_liberacao}</td>
+        </tr>`).join("")}
+      </tbody>
+    </table>
+    <div style="font-size:10.5px;color:var(--text-muted);margin-top:8px;">
+      Ordenado por maior % de desconto. <b>c/ liberação</b> = itens vendidos abaixo do limite que precisaram da sua aprovação.
+    </div>`;
 }
 
 function barRow(label, valor, valorMax, valorFormatado) {
