@@ -324,5 +324,48 @@ if sem_dono:
 check("vendedor segue sem enxergar carteira alheia",
       cli.get(f"/api/customers/{cust}", headers=login('tiago@lojadigimagem.com.br','vendas123')).status_code == 403)
 
+print("\n[17] ✍️ 'Alterou' só quando algo mudou de fato")
+def updates_cliente(cid):
+    r = cli.get(f"/api/audit?acao=update&entidade=customers&limite=200", headers=ha).get_json()
+    return [x for x in r["registros"] if x["entidade_id"] == cid]
+
+def salvar(**mudar):
+    # relê o estado atual a cada chamada: montar o corpo a partir de um retrato
+    # antigo faria a própria requisição desfazer alterações anteriores
+    atual = q("SELECT * FROM customers WHERE id = ?", (cust,))[0]
+    corpo = {k: atual[k] for k in ("nome", "whatsapp_id", "telefone", "email",
+                                   "cpf_cnpj", "endereco", "cep", "origem")}
+    corpo.update(mudar)
+    return cli.put(f"/api/customers/{cust}", headers=ha, json=corpo)
+
+antes = len(updates_cliente(cust))
+r = salvar()                                     # salvar sem mexer em nada
+check("salvar sem mudança é aceito", r.status_code == 200, r.get_json())
+check("e NÃO gera registro", len(updates_cliente(cust)) == antes, len(updates_cliente(cust)))
+
+salvar(nome="Studio Nova Fotografia")
+regs = updates_cliente(cust)
+check("mudança real gera registro", len(regs) == antes + 1)
+det = regs[0]["detalhes"]
+check("registra no formato antes → depois",
+      isinstance(det, dict) and "→" in str(det.get("nome", "")), det)
+check("registra SÓ o campo que mudou", isinstance(det, dict) and list(det.keys()) == ["nome"], det)
+
+n2 = len(updates_cliente(cust))
+salvar(telefone=None)                            # None onde já era vazio
+check("None vs vazio não conta como mudança", len(updates_cliente(cust)) == n2,
+      updates_cliente(cust)[0]["detalhes"] if len(updates_cliente(cust)) > n2 else "")
+
+check("número longo sobrevive à comparação",
+      _norm := True and A._norm_auditoria("5548999990002") == "5548999990002")
+check("e dois WhatsApp diferentes não colapsam",
+      A._norm_auditoria("5548999990002") != A._norm_auditoria("5548999990003"))
+check("10 e '10' são a mesma coisa", A._norm_auditoria(10) == A._norm_auditoria("10"))
+check("10.0 e '10' também", A._norm_auditoria(10.0) == A._norm_auditoria("10"))
+check("senha nunca entra no diff",
+      "senha" not in A._diff_auditoria({"senha": "a"}, {"senha": "b"}))
+check("texto muito longo é cortado",
+      len(A._txt_auditoria("x" * 400)) <= 60, len(A._txt_auditoria("x" * 400)))
+
 print(f"\n{'='*46}\n  {ok} passaram · {fail} falharam\n{'='*46}")
 sys.exit(1 if fail else 0)

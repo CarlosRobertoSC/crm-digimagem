@@ -136,6 +136,52 @@ def audit(acao, entidade, entidade_id=None, detalhes=None):
     )
 
 
+def _txt_auditoria(v):
+    """Valor legível para o log: vazio vira travessão, texto longo é cortado."""
+    if v is None or v == "":
+        return "—"
+    s = str(v)
+    return s if len(s) <= 60 else s[:57] + "…"
+
+
+def _norm_auditoria(v):
+    """Normaliza para comparação. O formulário devolve "" onde o banco tem NULL
+    e "10" onde o banco tem 10 — sem isto, salvar sem mudar nada acusaria
+    alteração em todo campo. A conversão é conservadora de propósito: números
+    longos (WhatsApp, CNPJ) NÃO passam por float, que perderia dígitos.
+    """
+    if v is None:
+        return ""
+    if isinstance(v, bool):
+        return "1" if v else "0"
+    if isinstance(v, float) and v.is_integer():
+        return str(int(v))
+    return str(v).strip()
+
+
+def _diff_auditoria(antes, depois, ignorar=()):
+    """Devolve só os campos que mudaram, no formato "antes → depois" — o mesmo
+    usado na edição de item do orçamento.
+
+    Antes disto, algumas rotas gravavam o corpo inteiro da requisição: o log
+    afirmava "alterou" mesmo quando o usuário abria e salvava sem mexer em nada,
+    e não respondia à única pergunta que uma auditoria precisa responder, que é
+    o que mudou. Sem diferenças, o chamador não deve registrar nada.
+    """
+    mudancas = {}
+    for chave, novo in (depois or {}).items():
+        if chave in ignorar or chave == "senha" or chave.startswith("senha"):
+            continue
+        try:
+            velho = antes[chave]
+        except (KeyError, IndexError, TypeError):
+            continue
+        if _norm_auditoria(velho) == _norm_auditoria(novo):
+            continue
+        mudancas[chave] = f"{_txt_auditoria(velho)} → {_txt_auditoria(novo)}"
+    return mudancas
+
+
 def _ultimo_dia_mes(ano, mes):
     if mes == 12:
         return date(ano, 12, 31)
@@ -986,7 +1032,11 @@ def update_customer(customer_id):
         UPDATE customers SET {", ".join(f"{c} = ?" for c in campos)}, updated_at = ?
         WHERE id = ?
     """, (*valores.values(), now_iso(), customer_id))
-    audit("update", "customers", customer_id, body)
+    mudancas = _diff_auditoria(existing, valores)
+    if _norm_auditoria(dias_final) != _norm_auditoria(existing["recompra_dias"]):
+        mudancas["recompra_dias"] = f"{_txt_auditoria(existing['recompra_dias'])} → {_txt_auditoria(dias_final)}"
+    if mudancas:
+        audit("update", "customers", customer_id, mudancas)
     db.commit()
     return jsonify({"ok": True})
 
@@ -2291,7 +2341,9 @@ def update_deal(deal_id):
             INSERT INTO deal_value_history (id, deal_id, valor_anterior, valor_novo, user_id, created_at)
             VALUES (?,?,?,?,?,?)
         """, (new_id(), deal_id, valor_antigo, valor_num, g.current_user["id"], now_iso()))
-    audit("update", "deals", deal_id, body)
+    mudancas = _diff_auditoria(existing, body)
+    if mudancas:
+        audit("update", "deals", deal_id, mudancas)
     db.commit()
     return jsonify({"ok": True})
 
@@ -2555,7 +2607,11 @@ def update_user(user_id):
     except sqlite3.IntegrityError:
         return jsonify({"error": "Já existe um usuário com esse email."}), 409
 
-    audit("update", "users", user_id, {k: v for k, v in body.items() if k != "senha"})
+    mudancas = _diff_auditoria(target, body)
+    if body.get("senha"):
+        mudancas["senha"] = "redefinida"
+    if mudancas:
+        audit("update", "users", user_id, mudancas)
     db.commit()
     return jsonify({"ok": True})
 
@@ -2664,7 +2720,9 @@ def update_delegated_task(task_id):
         UPDATE delegated_tasks SET titulo=?, descricao=?, atribuido_para=?, data_prazo=?, updated_at=?
         WHERE id=?
     """, (titulo, descricao, atribuido, prazo, now_iso(), task_id))
-    audit("update", "delegated_tasks", task_id, body)
+    mudancas = _diff_auditoria(t, body)
+    if mudancas:
+        audit("update", "delegated_tasks", task_id, mudancas)
     db.commit()
     return jsonify({"ok": True})
 
