@@ -3012,6 +3012,7 @@ let ORC_CLIENTE_WHATS = null;
 
 async function abrirOrcamento(dealId) {
   ORC_DEAL_ID = dealId;
+  ORC_EDIT_ID = null;
   document.getElementById("orcOverlay").classList.add("open");
   document.getElementById("orcCorpo").innerHTML = `<div style="color:var(--text-muted);font-size:12px;">Carregando…</div>`;
   await renderOrcamento();
@@ -3020,6 +3021,7 @@ async function abrirOrcamento(dealId) {
 function fecharOrcamento() {
   document.getElementById("orcOverlay").classList.remove("open");
   ORC_DEAL_ID = null;
+  ORC_EDIT_ID = null;
   if (SELECTED_CUSTOMER_ID) showCustomer(SELECTED_CUSTOMER_ID);
 }
 
@@ -3035,10 +3037,23 @@ async function renderOrcamento() {
   const linhasItens = o.itens.map(i => `
     <tr>
       <td>📦 ${esc(i.produto_nome)}${linhaProduto(i) ? `<br>${seloProduto(i)}` : ""}${i.embalagem ? `<br><span style="color:var(--text-muted);font-size:10px;">${esc(i.embalagem)}</span>` : ""}${i.usou_limite ? `<br><span style="color:#e8a33d;font-size:10px;">↓ abaixo da tabela (${fmtPreco(i.preco_tabela)})</span>` : ""}${!i.aprovado ? `<br><span style="color:var(--urgent);font-size:10px;">⏳ aguardando liberação do administrador${i.liberacao_status === "negada" ? ` · NEGADO${i.liberacao_obs ? `: ${esc(i.liberacao_obs)}` : ""}` : ""}</span>` : ""}</td>
+      ${i.id === ORC_EDIT_ID ? `
+      <td style="text-align:center;">
+        <input id="edtQtd" type="number" min="1" value="${i.qtd}" title="Quantidade"
+          style="width:64px;background:var(--surface-raised);border:1px solid var(--accent);border-radius:8px;padding:6px 8px;color:var(--text-primary);font-size:12px;text-align:center;"></td>
+      <td style="white-space:nowrap;">
+        <input id="edtPreco" type="number" step="0.01" min="0.01" value="${i.preco_unit}" title="Preço unitário praticado"
+          style="width:96px;background:var(--surface-raised);border:1px solid var(--accent);border-radius:8px;padding:6px 8px;color:var(--text-primary);font-size:12px;"></td>
+      <td style="white-space:nowrap;color:var(--text-muted);font-size:11px;">recalcula ao salvar</td>
+      <td style="white-space:nowrap;">
+        <button class="btn-mini" onclick="salvarEdicaoItem('${esc(i.id)}')" title="Salvar alterações">✔</button>
+        <button class="btn-mini" onclick="cancelarEdicaoItem()" title="Cancelar">✖</button></td>`
+      : `
       <td style="text-align:center;">${i.qtd}</td>
       <td style="white-space:nowrap;">${fmtPreco(i.preco_unit)}</td>
       <td style="white-space:nowrap;">${fmtPreco(i.preco_unit * i.qtd)}</td>
-      <td>${podeEditar ? `<button class="btn-mini" onclick="removerItemOrcamento('${esc(i.id)}')" title="Remover item">🗑</button>` : ""}</td>
+      <td style="white-space:nowrap;">${podeEditar ? `<button class="btn-mini" onclick="editarItemOrcamento('${esc(i.id)}')" title="Editar quantidade e preço">✏️</button>
+        <button class="btn-mini" onclick="removerItemOrcamento('${esc(i.id)}')" title="Remover item">🗑</button>` : ""}</td>`}
     </tr>`).join("");
   const opsCond = [`<option value="">— condição de pagamento —</option>`]
     .concat(o.condicoes_disponiveis.map(c =>
@@ -3077,6 +3092,7 @@ async function renderOrcamento() {
 }
 
 let ORC_ORCAMENTO = null;
+let ORC_EDIT_ID = null;   // item do orçamento em modo de edição (v49)
 
 let ORC_SEL = null;
 
@@ -3140,6 +3156,53 @@ async function removerItemOrcamento(itemId) {
   try {
     await api(`/deals/${ORC_DEAL_ID}/orcamento/itens/${itemId}`, { method: "DELETE" });
     await renderOrcamento();
+  } catch (e) { alert(e.message); }
+}
+
+// ✏️ Edição do item já lançado (v49) — corrigir quantidade/preço sem apagar e
+// refazer. Mexer só na quantidade preserva a liberação já aprovada.
+function editarItemOrcamento(itemId) {
+  ORC_EDIT_ID = itemId;
+  renderOrcamento();
+}
+
+function cancelarEdicaoItem() {
+  ORC_EDIT_ID = null;
+  renderOrcamento();
+}
+
+async function salvarEdicaoItem(itemId) {
+  const campoQtd = document.getElementById("edtQtd");
+  const campoPreco = document.getElementById("edtPreco");
+  if (!campoQtd || !campoPreco) return;
+  const qtd = parseInt(campoQtd.value, 10);
+  const preco = parseFloat(campoPreco.value);
+  if (!qtd || qtd < 1) { alert("Informe uma quantidade maior que zero."); return; }
+  if (!preco || preco <= 0) { alert("Informe um preço unitário maior que zero."); return; }
+
+  const item = (ORC_ORCAMENTO.itens || []).find(x => x.id === itemId) || {};
+  const corpo = { qtd, preco_unit: preco };
+
+  // Se o novo preço cai abaixo do piso, pede o motivo aqui mesmo — é o texto
+  // que o administrador lê na tela de liberações.
+  const prod = (ORC_ORCAMENTO.produtos_disponiveis || []).find(p => p.id === item.produto_id);
+  const mudouPreco = Number(preco).toFixed(2) !== Number(item.preco_unit).toFixed(2);
+  if (mudouPreco && !ORC_ORCAMENTO.admin && prod && prod.preco_minimo && preco < prod.preco_minimo) {
+    const motivo = prompt("Este preço fica abaixo do seu limite. Conte ao administrador por que ele é necessário (concorrência, volume, fidelização…):");
+    if (motivo === null) return;
+    corpo.motivo = motivo;
+  }
+
+  try {
+    const r = await api(`/deals/${ORC_DEAL_ID}/orcamento/itens/${itemId}`, {
+      method: "PUT", body: JSON.stringify(corpo),
+    });
+    ORC_EDIT_ID = null;
+    await renderOrcamento();
+    if (r && r.novo_pedido) {
+      document.getElementById("orcErro").textContent =
+        "🙋 Preço alterado e pedido de liberação enviado ao administrador. A proposta já pode ser enviada; o negócio só poderá ser marcado como GANHO após a aprovação.";
+    }
   } catch (e) { alert(e.message); }
 }
 

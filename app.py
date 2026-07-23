@@ -1722,6 +1722,132 @@ def remover_item_orcamento(deal_id, item_id):
     return jsonify({"ok": True})
 
 
+@app.put("/api/deals/<deal_id>/orcamento/itens/<item_id>")
+@login_required
+def editar_item_orcamento(deal_id, item_id):
+    """✏️ Edita quantidade e/ou preço unitário de um item já lançado (v49).
+
+    Até a v48 só existia adicionar e excluir: corrigir uma quantidade obrigava a
+    apagar e refazer o item — e, se aquele preço tinha liberação aprovada, ela já
+    havia sido consumida (uso único), forçando um novo pedido ao administrador.
+    Era a maior fricção diária do sistema.
+
+    Regras:
+    - Só em negócio ABERTO, com a mesma permissão do POST.
+    - Mudar SÓ a quantidade não encosta em preço, aprovação nem liberação: o que
+      foi liberado continua valendo. Aumento de quantidade em item com liberação
+      aprovada é livre, porém fica registrado no audit_log.
+    - Mudar o preço reavalia a trava com a mesma lógica do POST: dentro da
+      autonomia entra direto; abaixo do piso, reaproveita a liberação que já
+      cubra o novo preço ou abre um pedido novo. Um pedido pendente que ficou
+      sem sentido é cancelado, para o admin não decidir um preço que ninguém
+      mais está pedindo.
+    """
+    d, erro = _deal_permitido_ou_erro(deal_id, escrita=True)
+    if erro:
+        return erro
+    if d["status"] != "aberto":
+        return jsonify({"error": "Orçamento só pode ser alterado em negócio ABERTO — reabra o negócio se necessário."}), 400
+    db = get_db()
+    i = db.execute("SELECT * FROM deal_itens WHERE id = ? AND deal_id = ?", (item_id, deal_id)).fetchone()
+    if not i:
+        return jsonify({"error": "Item não encontrado neste orçamento."}), 404
+    p = db.execute("SELECT * FROM produtos WHERE id = ?", (i["produto_id"],)).fetchone()
+    if not p:
+        return jsonify({"error": "O produto deste item não está mais no catálogo."}), 400
+
+    body = request.get_json(force=True, silent=True) or {}
+    qtd_ant, preco_ant = i["qtd"], i["preco_unit"]
+
+    qtd = qtd_ant if body.get("qtd") is None else _int_or_none(body.get("qtd"))
+    if not qtd or qtd < 1:
+        return jsonify({"error": "Informe a quantidade (número maior que zero)."}), 400
+    if body.get("preco_unit") is None:
+        preco_unit = preco_ant
+    else:
+        try:
+            preco_unit = round(float(body.get("preco_unit")), 2)
+        except (TypeError, ValueError):
+            return jsonify({"error": "Preço unitário inválido."}), 400
+    if preco_unit <= 0:
+        return jsonify({"error": "Informe o preço unitário (número maior que zero)."}), 400
+
+    preco_mudou = round(preco_unit, 2) != round(preco_ant or 0, 2)
+    if qtd == qtd_ant and not preco_mudou:
+        return jsonify({"ok": True, "sem_alteracao": True})
+
+    aprovado = i["aprovado"]
+    lib_id = i["liberacao_id"]
+    lib_atual = db.execute("SELECT * FROM liberacoes_preco WHERE id = ?", (lib_id,)).fetchone() if lib_id else None
+    consumir = None       # liberação vigente a marcar como 'usada'
+    cancelar = None       # pedido pendente que perdeu o sentido
+    novo_pedido = None
+
+    if preco_mudou:
+        limite = _preco_piso(p)
+        if limite and preco_unit < limite and g.current_user["role"] != "admin":
+            # 🛡 abaixo do piso: precisa estar coberto por alguma liberação
+            coberto_pela_propria = (lib_atual is not None
+                                    and lib_atual["status"] in ("aprovada", "usada")
+                                    and lib_atual["preco_autorizado"] is not None
+                                    and preco_unit >= lib_atual["preco_autorizado"])
+            if coberto_pela_propria:
+                aprovado = 1          # o que o admin já autorizou cobre o novo preço
+            else:
+                vigente = _liberacao_vigente(db, deal_id, p["id"], g.current_user["id"])
+                if vigente and vigente["preco_autorizado"] is not None and preco_unit >= vigente["preco_autorizado"]:
+                    aprovado, lib_id, consumir = 1, vigente["id"], vigente["id"]
+                else:
+                    aprovado = 0
+                    if lib_atual is not None and lib_atual["status"] == "pendente":
+                        cancelar = lib_atual["id"]
+                    novo_pedido = new_id()
+                    db.execute("""
+                        INSERT INTO liberacoes_preco (id, deal_id, produto_id, user_id, preco_pedido, motivo, created_at)
+                        VALUES (?,?,?,?,?,?,?)
+                    """, (novo_pedido, deal_id, p["id"], g.current_user["id"], preco_unit,
+                          (body.get("motivo") or "").strip()[:400] or None, now_iso()))
+                    lib_id = novo_pedido
+        else:
+            # voltou para dentro da autonomia (ou é admin): não depende de liberação
+            aprovado = 1
+            if lib_atual is not None and lib_atual["status"] == "pendente":
+                cancelar = lib_atual["id"]
+                lib_id = None
+
+    preco_venda = _preco_venda(p)
+    usou_limite = 1 if (preco_venda and preco_unit < preco_venda) else 0
+    db.execute("""UPDATE deal_itens SET qtd = ?, preco_unit = ?, usou_limite = ?, aprovado = ?,
+                  liberacao_id = ? WHERE id = ?""",
+               (qtd, preco_unit, usou_limite, aprovado, lib_id, item_id))
+    if consumir:
+        db.execute("UPDATE liberacoes_preco SET status = 'usada', usado_em = ? WHERE id = ?",
+                   (now_iso(), consumir))
+    if cancelar:
+        db.execute("""UPDATE liberacoes_preco SET status = 'cancelada', decidido_em = ?,
+                      observacao = ? WHERE id = ?""",
+                   (now_iso(), "Cancelado automaticamente: o vendedor alterou o preço do item.", cancelar))
+
+    # 📋 Auditoria. Aumentar a quantidade de um item com liberação aprovada é
+    # livre (decisão do dono), mas nunca silencioso: amplia o faturamento a um
+    # preço abaixo do piso, então fica marcado para conferência posterior.
+    detalhe = {"deal": deal_id, "produto": p["nome"]}
+    if qtd != qtd_ant:
+        detalhe["qtd"] = f"{qtd_ant} → {qtd}"
+    if preco_mudou:
+        detalhe["preco"] = f"{preco_ant} → {preco_unit}"
+        detalhe["aguardando_liberacao"] = not aprovado
+    if qtd > qtd_ant and i["aprovado"] and i["liberacao_id"]:
+        detalhe["aumento_qtd_com_liberacao"] = True
+        detalhe["valor_adicional"] = round((qtd - qtd_ant) * preco_unit, 2)
+    audit("update", "deal_itens", item_id, detalhe)
+
+    calc = _sincronizar_valor_negocio(db, deal_id)
+    db.commit()
+    return jsonify({"ok": True, "aprovado": bool(aprovado), "novo_pedido": bool(novo_pedido),
+                    "total": calc["total"]})
+
+
 @app.put("/api/deals/<deal_id>/orcamento/condicao")
 @login_required
 def definir_condicao_orcamento(deal_id):
