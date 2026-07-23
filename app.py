@@ -835,7 +835,14 @@ def get_customer(customer_id):
     deals = db.execute("SELECT * FROM deals WHERE customer_id = ? ORDER BY created_at DESC", (customer_id,)).fetchall()
     tasks = db.execute("SELECT * FROM tasks WHERE customer_id = ? ORDER BY data_lembrete", (customer_id,)).fetchall()
     insights = db.execute("SELECT * FROM ai_insights WHERE customer_id = ? AND lido = 0 ORDER BY created_at DESC", (customer_id,)).fetchall()
-    audit("read", "customers", customer_id)
+    # 👁 v51c — antes, TODA abertura de ficha virava um registro. Era um por
+    # clique: o audit_log enchia de "consultou cliente" sem conteúdo e soterrava
+    # o que interessa (aprovações de preço, exclusões, transferências). O que
+    # tem valor de auditoria é o acesso à carteira ALHEIA — e como o vendedor só
+    # enxerga a própria, na prática isto marca o administrador abrindo o cliente
+    # de outra pessoa, que é o caso sensível da regra de sigilo de carteira.
+    if c["responsavel_id"] and c["responsavel_id"] != g.current_user["id"]:
+        audit("read", "customers", customer_id, {"carteira_de": c["responsavel_nome"]})
     db.commit()
     return jsonify({
         "customer": dict(c),

@@ -293,5 +293,36 @@ check("página 2 traz registros diferentes",
       not f2["registros"] or f2["registros"][0]["id"] != f["registros"][0]["id"])
 check("limite absurdo é contido", cli.get("/api/audit?limite=99999", headers=ha).get_json()["limite"] == 200)
 
+print("\n[16] 👁 Auditoria de leitura só marca acesso a carteira alheia")
+def reads():
+    r = cli.get("/api/audit?acao=read&entidade=customers", headers=ha).get_json()
+    return r["total"], r["registros"]
+
+antes, _ = reads()
+cli.get(f"/api/customers/{cust}", headers=hv)          # Ana abrindo cliente dela
+cli.get(f"/api/customers/{cust}", headers=hv)
+cli.get(f"/api/customers/{cust}", headers=hv)
+depois, _ = reads()
+check("vendedor na própria carteira não gera ruído", depois == antes, (antes, depois))
+
+cli.get(f"/api/customers/{cust}", headers=ha)          # admin abrindo cliente da Ana
+total, regs = reads()
+check("admin em carteira alheia é registrado", total == antes + 1, (antes, total))
+ultimo = regs[0] if regs else {}
+check("registra de quem é a carteira",
+      isinstance(ultimo.get("detalhes"), dict) and ultimo["detalhes"].get("carteira_de"),
+      ultimo.get("detalhes"))
+check("e o nome do cliente aparece como alvo", bool(ultimo.get("alvo_nome")), ultimo.get("alvo_nome"))
+
+sem_dono = q("SELECT id FROM customers WHERE responsavel_id IS NULL LIMIT 1")
+if sem_dono:
+    t1, _ = reads()
+    cli.get(f"/api/customers/{sem_dono[0]['id']}", headers=ha)
+    t2, _ = reads()
+    check("cliente sem responsável não gera registro", t2 == t1, (t1, t2))
+
+check("vendedor segue sem enxergar carteira alheia",
+      cli.get(f"/api/customers/{cust}", headers=login('tiago@lojadigimagem.com.br','vendas123')).status_code == 403)
+
 print(f"\n{'='*46}\n  {ok} passaram · {fail} falharam\n{'='*46}")
 sys.exit(1 if fail else 0)
