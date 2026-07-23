@@ -2917,26 +2917,30 @@ async function abrirKitSugerido(customerId) {
   let data;
   try { data = await api(`/customers/${customerId}/kit-sugerido`); }
   catch (e) { document.getElementById("kitCorpo").innerHTML = `<div style="color:var(--urgent);font-size:12px;">${esc(e.message)}</div>`; return; }
-  if (data.aviso) {
+  if (!data.tem_historico) {
     document.getElementById("kitCorpo").innerHTML = `<div style="color:var(--text-muted);font-size:12.5px;">${esc(data.aviso)}</div>`;
     return;
   }
   document.getElementById("kitSub").textContent =
-    `Equipamentos: ${data.equipamentos.join(", ")}${data.rolos_mes ? ` · consumo ~${data.rolos_mes} rolos/mês` : ""}`;
+    `Reposição baseada no que ${data.cliente_nome} já comprou`;
   const fmt = v => v ? "R$ " + Number(v).toLocaleString("pt-BR", { minimumFractionDigits: 2 }) : "—";
-  document.getElementById("kitCorpo").innerHTML = data.grupos.map(g => `
-    <div style="margin-bottom:14px;">
-      <div style="font-size:12px;font-weight:600;color:var(--accent);margin-bottom:6px;">🖨 ${esc(g.equipamento_nome)}</div>
-      <table class="report-table">
-        <thead><tr><th>Produto</th><th>Sugestão</th><th>Preço tabela</th></tr></thead>
-        <tbody>${g.produtos.map(p => `<tr>
-          <td>📦 ${esc(p.nome)}${p.embalagem ? `<br><span style="color:var(--text-muted);font-size:10px;">${esc(p.embalagem)}</span>` : ""}</td>
-          <td style="text-align:center;">${p.qtd_sugerida}x</td>
-          <td style="white-space:nowrap;">${fmt(p.preco_tabela)}</td>
-        </tr>`).join("")}</tbody>
-      </table>
-    </div>`).join("") +
-    `<div style="font-size:10.5px;color:var(--text-muted);margin-top:4px;">Sugestão baseada nos equipamentos da ficha e no consumo mensal. Use como roteiro ao montar o orçamento.</div>`;
+  const diasDe = d => {
+    if (!d) return "";
+    const dt = new Date(d + "T00:00:00");
+    const dias = Math.floor((Date.now() - dt.getTime()) / 86400000);
+    return dias === 0 ? "hoje" : `há ${dias} dia${dias > 1 ? "s" : ""}`;
+  };
+  document.getElementById("kitCorpo").innerHTML = `
+    <table class="report-table">
+      <thead><tr><th>Produto</th><th>Qtd usual</th><th>Última compra</th><th>Preço tabela</th></tr></thead>
+      <tbody>${data.historico.map(p => `<tr style="${p.indisponivel ? "opacity:.5;" : ""}">
+        <td>📦 ${esc(p.nome)}${linhaProduto(p) ? `<br>${seloProduto(p, "1px")}` : ""}${p.indisponivel ? `<br><span style="color:var(--urgent);font-size:10px;">indisponível para novo pedido</span>` : ""}</td>
+        <td style="text-align:center;font-weight:600;">${p.qtd_media}x <span style="color:var(--text-muted);font-size:10px;">(${p.vezes}x comprou)</span></td>
+        <td style="white-space:nowrap;font-size:11px;">${p.ultima_compra ? p.ultima_compra.split("-").reverse().join("/") : "—"}<br><span style="color:var(--text-muted);font-size:10px;">${diasDe(p.ultima_compra)}</span></td>
+        <td style="white-space:nowrap;">${fmt(p.preco_tabela)}</td>
+      </tr>`).join("")}</tbody>
+    </table>
+    <div style="font-size:10.5px;color:var(--text-muted);margin-top:6px;">Roteiro de recompra: o que este cliente costuma comprar, com a quantidade média por pedido. Use ao montar o próximo orçamento.</div>`;
 }
 let ORC_CLIENTE_WHATS = null;
 

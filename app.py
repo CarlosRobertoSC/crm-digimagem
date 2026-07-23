@@ -3726,66 +3726,55 @@ def report_vendas_produto():
                     "produtos": produtos, "linhas": linhas, "total": total})
 
 
-# 🎯 Kit sugerido por equipamento — mapa slug do cliente -> palavras-chave
-# que aparecem na coluna "equipamento" dos produtos da planilha.
-KIT_EQUIP_KEYWORDS = {
-    "ask300": ["ASK-300"],
-    "ask400": ["ASK-400"],
-    "dx100": ["DX100"],
-    "de100": ["DE100"],
-    "de100xd": ["DE100XD", "DE100-XD"],
-    "dx400": ["DX400"],
-    "minilab": ["Crystal Archive", "Archive Pro", "RA60", "Fujicolor", "CP49", "Starter", "FCS"],
-    "instax": ["Instax"],
-}
-
-
 @app.get("/api/customers/<customer_id>/kit-sugerido")
 @login_required
 def kit_sugerido(customer_id):
-    """🎯 Sugere produtos compatíveis com os equipamentos do cliente.
-    Cruza os equipamentos cadastrados na ficha com a linha de cada produto
-    ofertável, e sugere quantidade com base no consumo mensal (rolos/mês)."""
+    """🎯 Sugere a reposição do que o cliente REALMENTE compra.
+    Base primária: o histórico de itens em negócios ganhos deste cliente
+    (o que ele consome de fato), com a quantidade média por pedido e a
+    data da última compra. Isso é um roteiro de recompra — não o catálogo
+    inteiro compatível com o equipamento."""
     db = get_db()
     c = db.execute("SELECT * FROM customers WHERE id = ?", (customer_id,)).fetchone()
     if not c:
         return jsonify({"error": "Cliente não encontrado."}), 404
-    # RBAC: vendedor só na própria carteira
     if g.current_user["role"] != "admin" and c["responsavel_id"] != g.current_user["id"]:
         return jsonify({"error": "Este cliente não está na sua carteira."}), 403
 
-    equipamentos = normalizar_equipamentos(c["equipamentos"])
-    slugs = json.loads(equipamentos) if equipamentos else []
-    if not slugs:
-        return jsonify({"equipamentos": [], "grupos": [],
-                        "aviso": "Cadastre os equipamentos do cliente na ficha para receber sugestões de kit."})
+    # Histórico real de compras: itens de negócios GANHOS deste cliente
+    comprados = db.execute("""
+        SELECT p.id, p.nome, p.categoria, p.equipamento, p.embalagem,
+               p.preco_tabela, p.ativo, p.ofertavel,
+               SUM(i.qtd) as qtd_total, COUNT(DISTINCT d.id) as vezes,
+               MAX(d.etapa_atualizada_em) as ultima_compra
+        FROM deal_itens i
+        JOIN deals d ON d.id = i.deal_id
+        JOIN produtos p ON p.id = i.produto_id
+        WHERE d.customer_id = ? AND d.status = 'ganho'
+        GROUP BY p.id
+        ORDER BY ultima_compra DESC, qtd_total DESC
+    """, (customer_id,)).fetchall()
 
-    rolos = c["rolos_mes_media"] or 0
-    grupos = []
-    for slug in slugs:
-        keywords = KIT_EQUIP_KEYWORDS.get(slug, [])
-        if not keywords:
-            continue
-        like = " OR ".join("(p.equipamento LIKE ? OR p.categoria LIKE ?)" for _ in keywords)
-        params = []
-        for k in keywords:
-            params += [f"%{k}%", f"%{k}%"]
-        prods = db.execute(f"""
-            SELECT p.id, p.nome, p.categoria, p.equipamento, p.preco_tabela, p.embalagem, p.desconto_valor
-            FROM produtos p WHERE p.ativo = 1 AND p.ofertavel != 0 AND ({like})
-            ORDER BY p.preco_tabela DESC
-        """, params).fetchall()
-        itens = []
-        for p in prods:
-            itens.append({**dict(p),
-                          "qtd_sugerida": rolos if rolos else 1})
-        if itens:
-            grupos.append({"equipamento_slug": slug,
-                           "equipamento_nome": EQUIPAMENTOS.get(slug, slug),
-                           "produtos": itens})
-    return jsonify({"equipamentos": [EQUIPAMENTOS.get(s, s) for s in slugs],
-                    "rolos_mes": rolos, "grupos": grupos,
-                    "aviso": None if grupos else "Nenhum produto do catálogo corresponde aos equipamentos deste cliente."})
+    historico = []
+    for p in comprados:
+        vezes = p["vezes"] or 1
+        historico.append({
+            "id": p["id"], "nome": p["nome"], "categoria": p["categoria"],
+            "equipamento": p["equipamento"], "embalagem": p["embalagem"],
+            "preco_tabela": p["preco_tabela"],
+            "qtd_media": round(p["qtd_total"] / vezes),
+            "vezes": vezes,
+            "ultima_compra": (p["ultima_compra"] or "")[:10],
+            "indisponivel": not (p["ativo"] and p["ofertavel"]),
+        })
+
+    return jsonify({
+        "cliente_nome": c["nome"],
+        "tem_historico": bool(historico),
+        "historico": historico,
+        "aviso": None if historico else
+                 "Este cliente ainda não tem compras registradas com itens de orçamento. Assim que ele fechar negócios pelo sistema, o kit de recompra aparece aqui automaticamente.",
+    })
 
 
 @app.get("/api/reports/origem-leads")
