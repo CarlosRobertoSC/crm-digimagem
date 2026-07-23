@@ -1569,6 +1569,115 @@ def listar_liberacoes():
     return jsonify({"liberacoes": [dict(r) for r in rows], "admin": g.current_user["role"] == "admin"})
 
 
+# ------------------------------------------------------------------
+# 📋 AUDITORIA VISÍVEL (v51)
+# A tabela audit_log registra desde o início, mas até aqui só era legível por
+# SSH e SQL. A v49 piorou o problema: passou a marcar os aumentos de quantidade
+# em item com liberação aprovada — um registro criado para conferência que
+# ninguém conseguia conferir. Esta rota é SOMENTE LEITURA.
+# ------------------------------------------------------------------
+AUDIT_ROTULO_TABELA = {
+    "deals": ("deals", "titulo"), "customers": ("customers", "nome"),
+    "produtos": ("produtos", "nome"), "users": ("users", "nome"),
+    "metas": ("metas", "titulo"), "tasks": ("tasks", "descricao"),
+    "delegated_tasks": ("delegated_tasks", "titulo"),
+}
+
+# Chaves que guardam ID dentro de `detalhes`. Sem isto a tela mostraria hashes —
+# e o registro mais sensível de todos, a transferência de carteira, diria apenas
+# "para: 4f2a9c…" em vez do nome do vendedor que recebeu os clientes.
+AUDIT_REFS = {
+    "deal": ("deals", "titulo"), "deal_id": ("deals", "titulo"),
+    "customer_id": ("customers", "nome"), "para": ("users", "nome"),
+    "meta_id": ("metas", "titulo"),
+}
+
+
+@app.get("/api/audit")
+@login_required
+def listar_auditoria():
+    """📋 Histórico de alterações, filtrável (admin).
+
+    Devolve uma página de registros já com o nome do autor e, quando a entidade
+    tem um título próprio, o nome do alvo — senão a tela mostraria só hashes.
+    Os alvos são resolvidos em uma consulta por tabela sobre a página atual,
+    não um JOIN por linha.
+    """
+    if g.current_user["role"] != "admin":
+        return jsonify({"error": "Apenas administradores consultam a auditoria."}), 403
+    db = get_db()
+    where, params = ["1=1"], []
+    if request.args.get("acao"):
+        where.append("a.acao = ?"); params.append(request.args["acao"])
+    if request.args.get("entidade"):
+        where.append("a.entidade = ?"); params.append(request.args["entidade"])
+    if request.args.get("user_id"):
+        where.append("a.user_id = ?"); params.append(request.args["user_id"])
+    if request.args.get("desde"):
+        where.append("a.created_at >= ?"); params.append(request.args["desde"] + " 00:00:00")
+    if request.args.get("ate"):
+        where.append("a.created_at <= ?"); params.append(request.args["ate"] + " 23:59:59")
+    if request.args.get("q"):
+        where.append("(a.detalhes LIKE ? OR a.entidade_id = ?)")
+        params.extend([f"%{request.args['q'].strip()}%", request.args["q"].strip()])
+    clause = " AND ".join(where)
+
+    limite = min(max(_int_or_none(request.args.get("limite")) or 50, 1), 200)
+    pagina = max(_int_or_none(request.args.get("pagina")) or 1, 1)
+    total = db.execute(f"SELECT COUNT(*) c FROM audit_log a WHERE {clause}", params).fetchone()["c"]
+    linhas = [dict(r) for r in db.execute(f"""
+        SELECT a.*, u.nome as autor_nome, u.role as autor_role
+        FROM audit_log a LEFT JOIN users u ON u.id = a.user_id
+        WHERE {clause} ORDER BY a.created_at DESC, a.rowid DESC LIMIT ? OFFSET ?
+    """, params + [limite, (pagina - 1) * limite]).fetchall()]
+
+    # ---- resolução de nomes, em lote sobre a página atual ----
+    for r in linhas:
+        try:
+            r["detalhes"] = json.loads(r["detalhes"]) if r["detalhes"] else None
+        except (TypeError, ValueError):
+            pass   # registro antigo em formato inesperado: a tela mostra como veio
+
+    pedidos = {}   # (tabela, coluna) -> {ids}
+    for r in linhas:
+        if r["entidade"] in AUDIT_ROTULO_TABELA and r["entidade_id"]:
+            pedidos.setdefault(AUDIT_ROTULO_TABELA[r["entidade"]], set()).add(r["entidade_id"])
+        if isinstance(r["detalhes"], dict):
+            for chave, valor in r["detalhes"].items():
+                if chave in AUDIT_REFS and isinstance(valor, str) and valor:
+                    pedidos.setdefault(AUDIT_REFS[chave], set()).add(valor)
+
+    nomes = {}
+    for (tabela, coluna), ids in pedidos.items():
+        marcas = ",".join("?" * len(ids))
+        for row in db.execute(f"SELECT id, {coluna} AS rotulo FROM {tabela} WHERE id IN ({marcas})",
+                              list(ids)).fetchall():
+            nomes[(tabela, row["id"])] = row["rotulo"]
+
+    for r in linhas:
+        tab = AUDIT_ROTULO_TABELA.get(r["entidade"])
+        r["alvo_nome"] = nomes.get((tab[0], r["entidade_id"])) if tab else None
+        if isinstance(r["detalhes"], dict):
+            for chave in list(r["detalhes"]):
+                if chave in AUDIT_REFS and isinstance(r["detalhes"][chave], str):
+                    tabela = AUDIT_REFS[chave][0]
+                    # registro apagado depois: mantém o ID em vez de mentir um nome
+                    r["detalhes"][chave] = nomes.get((tabela, r["detalhes"][chave]), r["detalhes"][chave])
+            if not r["alvo_nome"]:
+                # entidades sem título próprio (item de orçamento, anotação,
+                # liberação) herdam o negócio a que pertencem
+                r["alvo_nome"] = r["detalhes"].get("deal") or r["detalhes"].get("deal_id") or r["detalhes"].get("produto")
+
+    return jsonify({
+        "registros": linhas, "total": total, "pagina": pagina, "limite": limite,
+        "paginas": max(1, -(-total // limite)),
+        "acoes": [r["acao"] for r in db.execute("SELECT DISTINCT acao FROM audit_log ORDER BY acao")],
+        "entidades": [r["entidade"] for r in db.execute("SELECT DISTINCT entidade FROM audit_log ORDER BY entidade")],
+        "usuarios": [dict(r) for r in db.execute(
+            "SELECT id, nome FROM users ORDER BY nome").fetchall()],
+    })
+
+
 @app.get("/api/liberacoes/pendentes")
 @login_required
 def contar_liberacoes_pendentes():
@@ -1626,7 +1735,18 @@ def decidir_liberacao(liberacao_id):
         db.execute("""UPDATE deal_itens SET aprovado = 1, preco_unit = ?
                       WHERE liberacao_id = ?""", (autorizado, liberacao_id))
         _sincronizar_valor_negocio(db, l["deal_id"])
-    audit("update", "liberacoes_preco", liberacao_id, {"decisao": decisao})
+    # v51: o registro guardava apenas {"decisao": "aprovar"} — sem produto, preço
+    # nem vendedor, era ilegível na tela de auditoria. Acréscimo somente aditivo.
+    p_lib = db.execute("SELECT nome FROM produtos WHERE id = ?", (l["produto_id"],)).fetchone()
+    u_lib = db.execute("SELECT nome FROM users WHERE id = ?", (l["user_id"],)).fetchone()
+    audit("update", "liberacoes_preco", liberacao_id, {
+        "decisao": decisao,
+        "deal": l["deal_id"],
+        "produto": p_lib["nome"] if p_lib else None,
+        "vendedor": u_lib["nome"] if u_lib else None,
+        "preco_pedido": l["preco_pedido"],
+        "preco_autorizado": autorizado if decisao == "aprovar" else None,
+    })
     db.commit()
     return jsonify({"ok": True})
 

@@ -71,6 +71,17 @@
     background:var(--urgent);color:#fff;font-size:10.5px;font-weight:700;font-family:var(--font-mono);
     display:none;align-items:center;justify-content:center;flex-shrink:0;line-height:1;}
   .rail-badge.on{display:inline-flex;}
+  /* v51 — auditoria */
+  .audit-filtros{display:flex;flex-wrap:wrap;gap:7px;align-items:center;}
+  .audit-filtros input,.audit-filtros select{background:var(--surface-raised);border:1px solid var(--border);
+    border-radius:8px;padding:6px 9px;color:var(--text-primary);font-size:11.5px;}
+  .audit-filtros input[type=text]{min-width:190px;flex:1;}
+  .audit-chip{display:inline-block;font-size:10.5px;font-family:var(--font-mono);background:var(--surface-raised);
+    border:1px solid var(--border);border-radius:6px;padding:2px 7px;margin:2px 3px 2px 0;color:var(--text-muted);}
+  .audit-chip b{color:var(--text-primary);font-weight:600;}
+  .audit-acao{font-size:10px;font-family:var(--font-mono);text-transform:uppercase;border-radius:20px;
+    padding:2px 8px;border:1px solid currentColor;white-space:nowrap;}
+  .audit-destaque{background:rgba(232,163,61,.10);border-left:2px solid #e8a33d;}
   .rail-footer{display:flex;align-items:center;gap:10px;padding:12px 11px 0;border-top:1px solid var(--border);cursor:pointer;}
   .rail-footer:hover .rail-label{color:var(--urgent);}
   .rail-avatar{width:32px;height:32px;flex-shrink:0;border-radius:50%;background:var(--surface-raised);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;font-family:var(--font-mono);font-size:11px;color:var(--text-muted);}
@@ -542,6 +553,7 @@
       <div class="rail-btn" title="Relatórios" id="navRelatorios" onclick="showView('relatorios')"><span class="rail-icon">▦</span><span class="rail-label">Relatórios</span></div>
       <div class="rail-btn" title="Notificações WhatsApp" id="navWhatsapp" onclick="showView('whatsapp')"><span class="rail-icon">◉</span><span class="rail-label">WhatsApp</span></div>
       <div class="rail-btn" title="Equipe" id="navEquipe" onclick="showView('equipe')" style="display:none;"><span class="rail-icon">◫</span><span class="rail-label">Equipe</span></div>
+      <div class="rail-btn" title="Auditoria" id="navAuditoria" onclick="showView('auditoria')" style="display:none;"><span class="rail-icon">🗂</span><span class="rail-label">Auditoria</span></div>
     </div>
     <div class="rail-footer" title="Sair" onclick="logout()">
       <div class="rail-avatar" id="userAvatar">--</div>
@@ -835,6 +847,32 @@
         </table>
       </div>
     </div>
+
+    <div id="auditoriaView">
+      <div class="panel">
+        <div class="panel-head">
+          <div class="panel-title">🗂 Auditoria</div>
+          <span id="auditResumo" style="font-size:11.5px;color:var(--text-muted);font-family:var(--font-mono);"></span>
+        </div>
+        <div style="font-size:11.5px;color:var(--text-muted);margin-bottom:10px;">
+          Registro de tudo que foi criado, alterado e excluído no sistema — somente leitura, nada aqui pode ser editado ou apagado.
+        </div>
+        <div class="audit-filtros">
+          <input type="date" id="auditDesde" onchange="carregarAuditoria(1)" title="A partir de">
+          <input type="date" id="auditAte" onchange="carregarAuditoria(1)" title="Até">
+          <select id="auditAcao" onchange="carregarAuditoria(1)"><option value="">Todas as ações</option></select>
+          <select id="auditEntidade" onchange="carregarAuditoria(1)"><option value="">Tudo</option></select>
+          <select id="auditUsuario" onchange="carregarAuditoria(1)"><option value="">Todos os usuários</option></select>
+          <input type="text" id="auditBusca" placeholder="🔍 Buscar no conteúdo…" onkeydown="if(event.key==='Enter')carregarAuditoria(1)">
+          <button class="btn-mini" onclick="limparFiltrosAuditoria()">limpar</button>
+        </div>
+        <table class="report-table" style="margin-top:10px;">
+          <thead><tr><th>Quando</th><th>Quem</th><th>Ação</th><th>O quê</th><th>Detalhes</th></tr></thead>
+          <tbody id="auditTableBody"></tbody>
+        </table>
+        <div id="auditPaginacao" style="display:flex;gap:8px;align-items:center;justify-content:center;margin-top:12px;"></div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -1005,6 +1043,7 @@ async function enterApp() {
   if (CURRENT_USER.role === "admin") {
     document.getElementById("adminToggle").style.display = "flex";
     document.getElementById("navEquipe").style.display = "flex";
+    document.getElementById("navAuditoria").style.display = "flex";
     document.getElementById("btnNovaDelegada").style.display = "inline-flex";
   }
   showView("dashboard");
@@ -1035,24 +1074,25 @@ async function atualizarBadgeLiberacoes() {
   }
 }
 
-const VIEW_IDS = ["dashboard", "negocios", "assistente", "clientes", "tarefas", "delegadas", "metas", "relatorios", "whatsapp", "equipe"];
+const VIEW_IDS = ["dashboard", "negocios", "assistente", "clientes", "tarefas", "delegadas", "metas", "relatorios", "whatsapp", "equipe", "auditoria"];
 const VIEW_TITLES = {
   dashboard: "Painel de Triagem", negocios: "Negócios", assistente: "Assistente de Vendas",
   clientes: "Clientes", tarefas: "Tarefas", delegadas: "Tarefas da Equipe", metas: "Metas", relatorios: "Relatórios",
-  whatsapp: "Notificações WhatsApp", equipe: "Equipe",
+  whatsapp: "Notificações WhatsApp", equipe: "Equipe", auditoria: "Auditoria",
 };
 const VIEW_LOADERS = {
   negocios: loadNegociosView, assistente: loadAssistenteView, clientes: loadClientesView,
   tarefas: loadTarefasView, delegadas: loadDelegadasView, metas: loadMetasView, relatorios: loadRelatoriosView,
-  whatsapp: loadWhatsappView, equipe: loadEquipeView,
+  whatsapp: loadWhatsappView, equipe: loadEquipeView, auditoria: loadAuditoriaView,
 };
 const VIEW_NAV_BTN = {
   dashboard: "navAlertas", negocios: "navNegocios", assistente: "navAssistente",
   clientes: "navClientes", tarefas: "navTarefas", delegadas: "navDelegadas", metas: "navMetas", relatorios: "navRelatorios",
   whatsapp: "navWhatsapp", equipe: "navEquipe",
+  auditoria: "navAuditoria",
 };
 
-const ADMIN_ONLY_VIEWS = ["equipe"];
+const ADMIN_ONLY_VIEWS = ["equipe", "auditoria"];
 
 function showView(view) {
   if (ADMIN_ONLY_VIEWS.includes(view) && CURRENT_USER.role !== "admin") {
@@ -1727,6 +1767,132 @@ function completeTaskFromList(taskId) {
 // VIEW: Equipe (admin) — criar/desativar vendedores e admins
 // ------------------------------------------------------------------
 let EQUIPE_USERS = {};
+
+// ==================================================================
+// 🗂 AUDITORIA (v51) — leitura do audit_log. Nenhuma ação escreve nada.
+// Existe porque a v49 passou a registrar aumentos de quantidade em item com
+// liberação aprovada: um registro de conferência que só era legível por SSH.
+// ==================================================================
+let AUDIT_PAGINA = 1;
+let AUDIT_FILTROS_PRONTOS = false;
+
+const AUDIT_ACAO_ROTULO = { create: "criou", update: "alterou", delete: "excluiu", read: "consultou" };
+const AUDIT_ACAO_COR = { create: "#1fbf63", update: "var(--signal)", delete: "var(--urgent)", read: "var(--text-muted)" };
+const AUDIT_ENTIDADE_ROTULO = {
+  deals: "Negócio", deal_itens: "Item de orçamento", deal_notes: "Anotação",
+  customers: "Cliente", produtos: "Produto", users: "Usuário", metas: "Meta",
+  meta_progresso: "Progresso de meta", tasks: "Tarefa", delegated_tasks: "Tarefa da equipe",
+  liberacoes_preco: "Liberação de preço", ai_insights: "Alerta",
+  base_comercial: "Base comercial", whatsapp_notification_channels: "Canal WhatsApp",
+};
+const AUDIT_CHAVE_ROTULO = {
+  qtd: "quantidade", preco: "preço", preco_pedido: "preço pedido",
+  preco_autorizado: "preço autorizado", valor_adicional: "valor adicional",
+  desconto_valor: "desconto", abaixo_tabela: "abaixo da tabela", abaixo_limite: "abaixo do limite",
+  nova_etapa: "nova etapa", motivo_perda: "motivo da perda", etapa_retorno: "etapa de retorno",
+  customer_id: "cliente", deal: "negócio", deal_id: "negócio", meta_id: "meta",
+  para: "transferido para", tem_anexo: "com anexo", solicitadas: "solicitadas",
+  aguardando_liberacao: "aguardando liberação",
+};
+
+function auditRotuloChave(k) { return AUDIT_CHAVE_ROTULO[k] || k.replace(/_/g, " "); }
+
+function auditValor(v) {
+  if (v === true) return "sim";
+  if (v === false) return "não";
+  if (v === null || v === undefined) return "—";
+  if (typeof v === "number") return Number.isInteger(v) ? v : fmtPreco(v);
+  return String(v);
+}
+
+function auditDetalhes(d) {
+  if (!d) return `<span style="color:var(--text-muted);">—</span>`;
+  if (typeof d !== "object") return esc(String(d));
+  // a marca da v49 merece frase, não par chave-valor
+  let frase = "";
+  if (d.aumento_qtd_com_liberacao) {
+    frase = `<div style="color:#e8a33d;font-size:10.5px;margin-bottom:3px;">⚠ quantidade aumentada em item com preço liberado${
+      d.valor_adicional ? ` — mais ${fmtPreco(d.valor_adicional)} no mesmo preço aprovado` : ""}</div>`;
+  }
+  const chips = Object.keys(d)
+    .filter(k => k !== "aumento_qtd_com_liberacao" && k !== "valor_adicional")
+    .map(k => `<span class="audit-chip">${esc(auditRotuloChave(k))}: <b>${esc(auditValor(d[k]))}</b></span>`)
+    .join("");
+  return frase + chips;
+}
+
+function limparFiltrosAuditoria() {
+  ["auditDesde", "auditAte", "auditBusca"].forEach(id => document.getElementById(id).value = "");
+  ["auditAcao", "auditEntidade", "auditUsuario"].forEach(id => document.getElementById(id).value = "");
+  carregarAuditoria(1);
+}
+
+function loadAuditoriaView() { carregarAuditoria(1); }
+
+async function carregarAuditoria(pagina) {
+  AUDIT_PAGINA = pagina || 1;
+  const tbody = document.getElementById("auditTableBody");
+  tbody.innerHTML = `<tr><td colspan="5" style="color:var(--text-muted);font-size:12px;">Carregando…</td></tr>`;
+  const q = new URLSearchParams({ pagina: AUDIT_PAGINA, limite: 50 });
+  const campos = { desde: "auditDesde", ate: "auditAte", acao: "auditAcao",
+                   entidade: "auditEntidade", user_id: "auditUsuario", q: "auditBusca" };
+  Object.entries(campos).forEach(([chave, id]) => {
+    const v = (document.getElementById(id).value || "").trim();
+    if (v) q.set(chave, v);
+  });
+
+  let data;
+  try {
+    data = await api("/audit?" + q.toString());
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="5" style="color:var(--urgent);font-size:12px;">${esc(e.message)}</td></tr>`;
+    return;
+  }
+
+  if (!AUDIT_FILTROS_PRONTOS) {
+    const enche = (id, itens, rotulo) => {
+      const sel = document.getElementById(id);
+      const atual = sel.value;
+      sel.innerHTML = sel.options[0].outerHTML +
+        itens.map(i => `<option value="${esc(i.valor)}">${esc(i.texto)}</option>`).join("");
+      sel.value = atual;
+    };
+    enche("auditAcao", data.acoes.map(a => ({ valor: a, texto: AUDIT_ACAO_ROTULO[a] || a })));
+    enche("auditEntidade", data.entidades.map(e => ({ valor: e, texto: AUDIT_ENTIDADE_ROTULO[e] || e })));
+    enche("auditUsuario", data.usuarios.map(u => ({ valor: u.id, texto: u.nome })));
+    AUDIT_FILTROS_PRONTOS = true;
+  }
+
+  document.getElementById("auditResumo").textContent =
+    data.total === 0 ? "nenhum registro" : `${data.total} registro(s) · página ${data.pagina} de ${data.paginas}`;
+
+  if (!data.registros.length) {
+    tbody.innerHTML = `<tr><td colspan="5" style="color:var(--text-muted);font-size:12px;">Nenhum registro para estes filtros.</td></tr>`;
+  } else {
+    tbody.innerHTML = data.registros.map(r => {
+      const dt = new Date(r.created_at.replace(" ", "T") + "Z");
+      const quando = dt.toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", year: "2-digit",
+                                                  hour: "2-digit", minute: "2-digit" });
+      const destaque = r.detalhes && r.detalhes.aumento_qtd_com_liberacao;
+      return `<tr class="${destaque ? "audit-destaque" : ""}">
+        <td style="white-space:nowrap;font-family:var(--font-mono);font-size:10.5px;">${esc(quando)}</td>
+        <td style="font-size:11px;">${esc(r.autor_nome || "—")}${
+          r.autor_role === "admin" ? `<br><span style="color:var(--text-muted);font-size:9.5px;">admin</span>` : ""}</td>
+        <td><span class="audit-acao" style="color:${AUDIT_ACAO_COR[r.acao] || "var(--text-muted)"};">${
+          esc(AUDIT_ACAO_ROTULO[r.acao] || r.acao)}</span></td>
+        <td style="font-size:11px;">${esc(AUDIT_ENTIDADE_ROTULO[r.entidade] || r.entidade)}${
+          r.alvo_nome ? `<br><span style="color:var(--text-primary);font-size:11px;">${esc(r.alvo_nome)}</span>` : ""}</td>
+        <td>${auditDetalhes(r.detalhes)}</td>
+      </tr>`;
+    }).join("");
+  }
+
+  const pag = document.getElementById("auditPaginacao");
+  pag.innerHTML = data.paginas <= 1 ? "" : `
+    <button class="btn-mini" ${data.pagina <= 1 ? "disabled" : ""} onclick="carregarAuditoria(${data.pagina - 1})">← anterior</button>
+    <span style="font-size:11px;color:var(--text-muted);font-family:var(--font-mono);">${data.pagina} / ${data.paginas}</span>
+    <button class="btn-mini" ${data.pagina >= data.paginas ? "disabled" : ""} onclick="carregarAuditoria(${data.pagina + 1})">próxima →</button>`;
+}
 
 async function loadEquipeView() {
   const tbody = document.getElementById("equipeTableBody");

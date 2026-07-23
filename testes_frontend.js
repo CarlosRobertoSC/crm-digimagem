@@ -136,9 +136,51 @@ async function suiteBadge() {
   check("não fez nada", badge.textContent === "" && !badge.classList.has("on"));
 }
 
+// ------------------------------------------------------------------
+// Suíte 3 — renderização dos detalhes da auditoria (v51)
+// ------------------------------------------------------------------
+async function suiteAuditoria() {
+  const codigo = extrair(
+    /const AUDIT_ACAO_ROTULO[\s\S]*?\nfunction auditDetalhes\(d\) \{[\s\S]*?\n}\n/,
+    "auditDetalhes");
+  global.esc = t => String(t).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  global.fmtPreco = v => "R$ " + Number(v).toFixed(2).replace(".", ",");
+  eval(codigo);
+
+  console.log("\n\n🗂 AUDITORIA — LEITURA DOS DETALHES\n");
+  console.log("[A] O registro da v49 vira frase, não par chave-valor");
+  let h = auditDetalhes({ aumento_qtd_com_liberacao: true, valor_adicional: 3010,
+                          produto: "Papel Fuji", qtd: "2 → 9" });
+  check("avisa do aumento com preço liberado", /quantidade aumentada em item com preço liberado/.test(h));
+  check("mostra o valor adicional em reais", /R\$ 3010,00/.test(h), h);
+  check("não repete a marca como chip", !/aumento_qtd_com_liberacao/.test(h));
+  check("mantém os demais campos", /quantidade: <b>2 → 9<\/b>/.test(h), h);
+
+  console.log("\n[B] Chaves técnicas viram português");
+  h = auditDetalhes({ preco_autorizado: 430, abaixo_limite: true, para: "Tiago" });
+  check("preco_autorizado → preço autorizado", /preço autorizado/.test(h));
+  check("abaixo_limite → abaixo do limite", /abaixo do limite/.test(h));
+  check("para → transferido para", /transferido para: <b>Tiago<\/b>/.test(h), h);
+  check("booleano vira sim/não", /<b>sim<\/b>/.test(h));
+
+  console.log("\n[C] Casos de borda não quebram a tela");
+  check("detalhes nulo", auditDetalhes(null).includes("—"));
+  check("detalhes vazio", typeof auditDetalhes({}) === "string");
+  check("valor nulo vira travessão", /<b>—<\/b>/.test(auditDetalhes({ motivo_perda: null })));
+  check("texto puro (registro antigo)", auditDetalhes("qualquer coisa") === "qualquer coisa");
+  check("chave desconhecida é legível",
+        /chave nova: <b>1<\/b>/.test(auditDetalhes({ chave_nova: 1 })), auditDetalhes({ chave_nova: 1 }));
+
+  console.log("\n[D] Conteúdo hostil é escapado");
+  h = auditDetalhes({ nome: '<img src=x onerror=alert(1)>' });
+  check("HTML não passa cru", !/<img/.test(h), h);
+  check("vira entidade escapada", /&lt;img/.test(h));
+}
+
 (async () => {
   await suiteEdicaoItem();
   await suiteBadge();
+  await suiteAuditoria();
   console.log(`\n${"=".repeat(46)}\n  ${ok} passaram · ${fail} falharam\n${"=".repeat(46)}`);
   process.exit(fail ? 1 : 0);
 })().catch(e => { console.error("❌ exceção:", e); process.exit(1); });

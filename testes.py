@@ -242,5 +242,56 @@ check("produto nunca usado ainda pode ser excluído", r.status_code == 200, r.ge
 check("vendedor não exclui produto",
       cli.delete(f"/api/produtos/{usado}", headers=hv).status_code == 403)
 
+print("\n[15] 🗂 Auditoria — leitura, permissão, nomes e filtros")
+check("vendedor recebe 403", cli.get("/api/audit", headers=hv).status_code == 403)
+check("sem sessão recebe 401", cli.get("/api/audit").status_code == 401)
+aud = cli.get("/api/audit", headers=ha).get_json()
+check("admin recebe registros", aud["total"] > 0, aud.get("total"))
+check("traz opções de filtro", bool(aud["acoes"]) and bool(aud["entidades"]) and bool(aud["usuarios"]))
+
+por_ent = {}
+for r in aud["registros"]:
+    por_ent.setdefault(r["entidade"], []).append(r)
+
+neg = por_ent.get("deals", [])
+check("negócio vem com o título resolvido",
+      any(r["alvo_nome"] for r in neg), [r["alvo_nome"] for r in neg][:3])
+check("cliente dentro dos detalhes vira nome, não hash",
+      all(len(str(r["detalhes"].get("customer_id", ""))) != 32
+          for r in neg if isinstance(r["detalhes"], dict) and r["detalhes"].get("customer_id")))
+
+itens_aud = por_ent.get("deal_itens", [])
+check("item de orçamento herda o nome do negócio",
+      any(r["alvo_nome"] for r in itens_aud), [r["alvo_nome"] for r in itens_aud][:3])
+aumentos = [r for r in itens_aud if isinstance(r["detalhes"], dict)
+            and r["detalhes"].get("aumento_qtd_com_liberacao")]
+check("o registro da v49 chega à tela", bool(aumentos))
+check("com o valor adicional junto",
+      bool(aumentos) and aumentos[0]["detalhes"].get("valor_adicional"), aumentos[:1])
+
+libs_aud = [r for r in por_ent.get("liberacoes_preco", []) if r["acao"] == "update"]
+check("decisão de preço registra produto e vendedor",
+      bool(libs_aud) and libs_aud[0]["detalhes"].get("produto") and libs_aud[0]["detalhes"].get("vendedor"),
+      libs_aud[:1])
+check("e os dois preços",
+      bool(libs_aud) and "preco_pedido" in libs_aud[0]["detalhes"] and "preco_autorizado" in libs_aud[0]["detalhes"])
+
+f = cli.get("/api/audit?entidade=deal_itens", headers=ha).get_json()
+check("filtro por entidade funciona",
+      f["total"] > 0 and all(r["entidade"] == "deal_itens" for r in f["registros"]))
+f = cli.get("/api/audit?acao=delete", headers=ha).get_json()
+check("filtro por ação funciona", all(r["acao"] == "delete" for r in f["registros"]))
+f = cli.get("/api/audit?q=aumento_qtd_com_liberacao", headers=ha).get_json()
+check("busca textual encontra a marca da v49", f["total"] >= 1, f["total"])
+f = cli.get("/api/audit?desde=2000-01-01&ate=2000-01-02", headers=ha).get_json()
+check("filtro de período exclui tudo fora dele", f["total"] == 0, f["total"])
+f = cli.get("/api/audit?limite=2&pagina=1", headers=ha).get_json()
+check("paginação respeita o limite", len(f["registros"]) <= 2)
+check("e calcula o total de páginas", f["paginas"] == -(-f["total"] // 2), (f["paginas"], f["total"]))
+f2 = cli.get("/api/audit?limite=2&pagina=2", headers=ha).get_json()
+check("página 2 traz registros diferentes",
+      not f2["registros"] or f2["registros"][0]["id"] != f["registros"][0]["id"])
+check("limite absurdo é contido", cli.get("/api/audit?limite=99999", headers=ha).get_json()["limite"] == 200)
+
 print(f"\n{'='*46}\n  {ok} passaram · {fail} falharam\n{'='*46}")
 sys.exit(1 if fail else 0)
