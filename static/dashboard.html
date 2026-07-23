@@ -854,6 +854,7 @@
     <div style="padding:14px 18px;max-height:60vh;overflow:auto;" id="kitCorpo"></div>
     <div style="display:flex;gap:8px;justify-content:flex-end;padding:12px 18px;border-top:1px solid var(--border);">
       <button class="btn-mini" onclick="document.getElementById('kitOverlay').classList.remove('open')">Fechar</button>
+      <button class="btn-primary" id="kitBtnMontar" style="display:none;" onclick="kitMontarOrcamento()">🛒 Montar orçamento com os selecionados</button>
     </div>
   </div>
 </div>
@@ -2909,11 +2910,15 @@ async function carregarAnexoImg(img) {
 }
 
 let ORC_DEAL_ID = null;
+let KIT_DADOS = [];        // histórico carregado no modal do kit
+let KIT_PENDENTE = [];     // itens que o kit envia para o "Novo negócio"
 
 async function abrirKitSugerido(customerId) {
   document.getElementById("kitOverlay").classList.add("open");
   document.getElementById("kitCorpo").innerHTML = `<div style="color:var(--text-muted);font-size:12px;">Carregando…</div>`;
   document.getElementById("kitSub").textContent = "";
+  document.getElementById("kitBtnMontar").style.display = "none";
+  KIT_DADOS = [];
   let data;
   try { data = await api(`/customers/${customerId}/kit-sugerido`); }
   catch (e) { document.getElementById("kitCorpo").innerHTML = `<div style="color:var(--urgent);font-size:12px;">${esc(e.message)}</div>`; return; }
@@ -2930,17 +2935,78 @@ async function abrirKitSugerido(customerId) {
     const dias = Math.floor((Date.now() - dt.getTime()) / 86400000);
     return dias === 0 ? "hoje" : `há ${dias} dia${dias > 1 ? "s" : ""}`;
   };
+  KIT_DADOS = data.historico;
+  const disponiveis = data.historico.filter(p => !p.indisponivel).length;
   document.getElementById("kitCorpo").innerHTML = `
     <table class="report-table">
-      <thead><tr><th>Produto</th><th>Qtd usual</th><th>Última compra</th><th>Preço tabela</th></tr></thead>
-      <tbody>${data.historico.map(p => `<tr style="${p.indisponivel ? "opacity:.5;" : ""}">
+      <thead><tr>
+        <th style="width:26px;"><input type="checkbox" id="kitTodos" ${disponiveis ? "checked" : "disabled"} onchange="kitMarcarTodos(this.checked)" title="Selecionar todos"></th>
+        <th>Produto</th><th>Repor</th><th>Última compra</th><th>Preço tabela</th>
+      </tr></thead>
+      <tbody>${data.historico.map((p, i) => `<tr style="${p.indisponivel ? "opacity:.5;" : ""}">
+        <td style="text-align:center;">
+          <input type="checkbox" class="kit-check" data-idx="${i}" ${p.indisponivel ? "disabled" : "checked"} onchange="kitAtualizarRodape()">
+        </td>
         <td>📦 ${esc(p.nome)}${linhaProduto(p) ? `<br>${seloProduto(p, "1px")}` : ""}${p.indisponivel ? `<br><span style="color:var(--urgent);font-size:10px;">indisponível para novo pedido</span>` : ""}</td>
-        <td style="text-align:center;font-weight:600;">${p.qtd_media}x <span style="color:var(--text-muted);font-size:10px;">(${p.vezes}x comprou)</span></td>
+        <td style="text-align:center;white-space:nowrap;">
+          <input type="number" class="kit-qtd" data-idx="${i}" value="${p.qtd_media}" min="1" ${p.indisponivel ? "disabled" : ""}
+            onchange="kitAtualizarRodape()"
+            style="width:58px;text-align:center;background:var(--surface-raised);border:1px solid var(--border);border-radius:6px;padding:4px 6px;color:var(--text-primary);font-size:12px;font-weight:600;">
+          <div style="color:var(--text-muted);font-size:10px;margin-top:2px;">usual ${p.qtd_media}x · ${p.vezes}x comprou</div>
+        </td>
         <td style="white-space:nowrap;font-size:11px;">${p.ultima_compra ? p.ultima_compra.split("-").reverse().join("/") : "—"}<br><span style="color:var(--text-muted);font-size:10px;">${diasDe(p.ultima_compra)}</span></td>
         <td style="white-space:nowrap;">${fmt(p.preco_tabela)}</td>
       </tr>`).join("")}</tbody>
     </table>
-    <div style="font-size:10.5px;color:var(--text-muted);margin-top:6px;">Roteiro de recompra: o que este cliente costuma comprar, com a quantidade média por pedido. Use ao montar o próximo orçamento.</div>`;
+    <div id="kitRodape" style="margin-top:10px;font-size:12px;"></div>
+    <div style="font-size:10.5px;color:var(--text-muted);margin-top:6px;">Ajuste as quantidades e monte o orçamento direto daqui — você ainda revisa tudo antes de salvar.</div>`;
+  document.getElementById("kitBtnMontar").style.display = disponiveis ? "" : "none";
+  kitAtualizarRodape();
+}
+
+function kitMarcarTodos(marcar) {
+  document.querySelectorAll(".kit-check:not(:disabled)").forEach(cb => { cb.checked = marcar; });
+  kitAtualizarRodape();
+}
+
+function kitSelecionados() {
+  const sel = [];
+  document.querySelectorAll(".kit-check:checked").forEach(cb => {
+    const i = Number(cb.dataset.idx);
+    const p = KIT_DADOS[i];
+    if (!p || p.indisponivel) return;
+    const campo = document.querySelector(`.kit-qtd[data-idx="${i}"]`);
+    const qtd = Math.max(1, parseInt(campo?.value, 10) || 1);
+    sel.push({ ...p, qtd });
+  });
+  return sel;
+}
+
+function kitAtualizarRodape() {
+  const sel = kitSelecionados();
+  const total = sel.reduce((s, p) => s + (p.preco_tabela || 0) * p.qtd, 0);
+  const box = document.getElementById("kitRodape");
+  const btn = document.getElementById("kitBtnMontar");
+  if (box) {
+    box.innerHTML = sel.length
+      ? `<b>${sel.length} item(ns) selecionado(s)</b> · estimativa pelo preço de tabela: <b>R$ ${total.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}</b>`
+      : `<span style="color:var(--text-muted);">Nenhum item selecionado.</span>`;
+  }
+  if (btn) btn.disabled = !sel.length;
+}
+
+function kitMontarOrcamento() {
+  const sel = kitSelecionados();
+  if (!sel.length) return;
+  KIT_PENDENTE = sel.map(p => ({
+    produto_id: p.id, nome: p.nome,
+    contexto: linhaProduto(p), cor: corProduto(p),
+    qtd: p.qtd,
+    preco_unit: null,                       // null = usa o preço de tabela vigente
+    preco_ref: p.preco_tabela || 0,
+  }));
+  document.getElementById("kitOverlay").classList.remove("open");
+  openModal("negocio");
 }
 let ORC_CLIENTE_WHATS = null;
 
@@ -3881,6 +3947,12 @@ async function openModal(kind) {
   }).join("");
   fieldsBox.dataset.activeFields = JSON.stringify(fields.filter(f => f.type !== "orcamento_itens" && f.type !== "resumo_orcamento").map(f => ({name: f.name, label: f.label, required: !!f.required, type: f.type})));
 
+  if (kind === "negocio" && KIT_PENDENTE.length) {
+    // 🛒 itens vindos do Kit sugerido: já entram montados no orçamento
+    MODAL_ITENS = KIT_PENDENTE.slice();
+    KIT_PENDENTE = [];
+    setTimeout(itensRenderLista, 0);
+  }
   if (kind === "editar_negocio") setTimeout(renderResumoOrcamentoEdicao, 0);
   // pré-preenche valores quando o modal é de edição (ex: editar usuário)
   if (cfg.prefill) {
