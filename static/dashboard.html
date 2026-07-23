@@ -64,6 +64,12 @@
   .rail-label{font-size:12.5px;font-weight:500;white-space:nowrap;}
   .rail-btn:hover{background:var(--surface-raised);color:var(--text-primary);}
   .rail-btn.active{background:var(--surface-raised);color:var(--urgent);}
+  /* v50: contador de liberações paradas. margin-left:auto encosta à direita
+     no menu expandido; no recolhido some junto com os rótulos. */
+  .rail-badge{margin-left:auto;min-width:18px;height:18px;padding:0 5px;border-radius:20px;
+    background:var(--urgent);color:#fff;font-size:10.5px;font-weight:700;font-family:var(--font-mono);
+    display:none;align-items:center;justify-content:center;flex-shrink:0;line-height:1;}
+  .rail-badge.on{display:inline-flex;}
   .rail-footer{display:flex;align-items:center;gap:10px;padding:12px 11px 0;border-top:1px solid var(--border);cursor:pointer;}
   .rail-footer:hover .rail-label{color:var(--urgent);}
   .rail-avatar{width:32px;height:32px;flex-shrink:0;border-radius:50%;background:var(--surface-raised);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;font-family:var(--font-mono);font-size:11px;color:var(--text-muted);}
@@ -531,7 +537,7 @@
       <div class="rail-btn" title="Clientes" id="navClientes" onclick="showView('clientes')"><span class="rail-icon">◍</span><span class="rail-label">Clientes</span></div>
       <div class="rail-btn" title="Tarefas" id="navTarefas" onclick="showView('tarefas')"><span class="rail-icon">☑</span><span class="rail-label">Tarefas</span></div>
       <div class="rail-btn" title="Tarefas da Equipe" id="navDelegadas" onclick="showView('delegadas')"><span class="rail-icon">▣</span><span class="rail-label">Tarefas da Equipe</span></div>
-      <div class="rail-btn" title="Metas" id="navMetas" onclick="showView('metas')"><span class="rail-icon">◎</span><span class="rail-label">Metas</span></div>
+      <div class="rail-btn" title="Metas" id="navMetas" onclick="showView('metas')"><span class="rail-icon">◎</span><span class="rail-label">Metas</span><span class="rail-badge" id="badgeLiberacoes" title="Liberações de preço pendentes">0</span></div>
       <div class="rail-btn" title="Relatórios" id="navRelatorios" onclick="showView('relatorios')"><span class="rail-icon">▦</span><span class="rail-label">Relatórios</span></div>
       <div class="rail-btn" title="Notificações WhatsApp" id="navWhatsapp" onclick="showView('whatsapp')"><span class="rail-icon">◉</span><span class="rail-label">WhatsApp</span></div>
       <div class="rail-btn" title="Equipe" id="navEquipe" onclick="showView('equipe')" style="display:none;"><span class="rail-icon">◫</span><span class="rail-label">Equipe</span></div>
@@ -981,6 +987,9 @@ document.getElementById("loginForm").addEventListener("submit", async (e) => {
 
 function logout() {
   TOKEN = null; CURRENT_USER = null; ADMIN_SCOPE_ALL = false;
+  if (TIMER_LIBERACOES) { clearInterval(TIMER_LIBERACOES); TIMER_LIBERACOES = null; }
+  const badge = document.getElementById("badgeLiberacoes");
+  if (badge) badge.classList.remove("on");
   localStorage.removeItem("digimagem_token");
   document.getElementById("shell").classList.remove("visible");
   document.getElementById("loginScreen").style.display = "flex";
@@ -999,6 +1008,30 @@ async function enterApp() {
   }
   showView("dashboard");
   await refreshAll();
+  atualizarBadgeLiberacoes();
+  if (!TIMER_LIBERACOES) TIMER_LIBERACOES = setInterval(atualizarBadgeLiberacoes, 60000);
+}
+
+// 🔔 v50 — contador de liberações paradas no menu ◎ Metas.
+// Para o admin: pedidos aguardando decisão dele. Para o vendedor: pedidos
+// dele parados no administrador. Consulta rota própria e enxuta (uma contagem),
+// nunca /dashboard/stats, que dispara o motor de alertas.
+let TIMER_LIBERACOES = null;
+
+async function atualizarBadgeLiberacoes() {
+  const el = document.getElementById("badgeLiberacoes");
+  if (!el || !CURRENT_USER) return;
+  try {
+    const { pendentes } = await api("/liberacoes/pendentes");
+    el.textContent = pendentes > 99 ? "99+" : pendentes;
+    el.classList.toggle("on", pendentes > 0);
+    el.title = pendentes === 0 ? "Nenhuma liberação pendente"
+      : (CURRENT_USER.role === "admin"
+          ? `${pendentes} pedido(s) de preço aguardando sua decisão`
+          : `${pendentes} pedido(s) seu(s) aguardando o administrador`);
+  } catch (e) {
+    el.classList.remove("on");   // falha de rede não deve deixar número velho na tela
+  }
 }
 
 const VIEW_IDS = ["dashboard", "negocios", "assistente", "clientes", "tarefas", "delegadas", "metas", "relatorios", "whatsapp", "equipe"];
@@ -2473,6 +2506,7 @@ async function decidirLiberacao(id, decisao) {
       body: JSON.stringify({ decisao, preco_autorizado, observacao }),
     });
     carregarLiberacoes();
+    atualizarBadgeLiberacoes();
     refreshAll();
   } catch (e) { alert(e.message); }
 }
@@ -3135,6 +3169,7 @@ async function adicionarItemOrcamento() {
       method: "POST",
       body: JSON.stringify({ produto_id, qtd, preco_unit: preco_unit || null }),
     });
+    atualizarBadgeLiberacoes();
     ORC_SEL = null;
     await renderOrcamento();
   } catch (e) { erro.textContent = e.message; }
@@ -3199,6 +3234,7 @@ async function salvarEdicaoItem(itemId) {
     });
     ORC_EDIT_ID = null;
     await renderOrcamento();
+    atualizarBadgeLiberacoes();
     if (r && r.novo_pedido) {
       document.getElementById("orcErro").textContent =
         "🙋 Preço alterado e pedido de liberação enviado ao administrador. A proposta já pode ser enviada; o negócio só poderá ser marcado como GANHO após a aprovação.";

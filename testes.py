@@ -195,5 +195,52 @@ check("GANHO agora é bloqueado", r.status_code == 400, r.get_json())
 check("negócio permanece aberto",
       q("SELECT status FROM deals WHERE id=?", (d2,))[0]["status"] == "aberto")
 
+print("\n[12] 🔔 Contador de liberações pendentes")
+d3 = cli.post("/api/deals", headers=hv, json={
+    "titulo": "Teste v50 — contador", "customer_id": cust, "categoria": "padrao"}).get_json()["id"]
+deal = d3
+def pendentes(h):
+    return cli.get("/api/liberacoes/pendentes", headers=h).get_json()["pendentes"]
+base_admin, base_ana = pendentes(ha), pendentes(hv)
+i4 = add(round(limite - 15, 2))["id"]              # gera um pedido
+check("admin vê +1", pendentes(ha) == base_admin + 1, pendentes(ha))
+check("vendedor vê o próprio +1", pendentes(hv) == base_ana + 1)
+outro2 = login("tiago@lojadigimagem.com.br", "vendas123")
+check("outro vendedor não vê pedido alheio", pendentes(outro2) == 0, pendentes(outro2))
+lid4 = item(i4)["liberacao_id"]
+cli.post(f"/api/liberacoes/{lid4}/decidir", headers=ha,
+         json={"decisao": "aprovar", "preco_autorizado": round(limite - 15, 2)})
+check("após decidir, volta ao valor anterior", pendentes(ha) == base_admin)
+check("rota exige sessão", cli.get("/api/liberacoes/pendentes").status_code == 401)
+
+print("\n[13] 🚫 Produto sem preço de tabela não pode ser vendido")
+c = sqlite3.connect(DB)
+c.execute("""INSERT INTO produtos (id, nome, ativo, ofertavel, desconto_valor)
+             VALUES ('p-sem-preco', 'Instax (sem preço)', 1, 1, 0)""")
+c.commit(); c.close()
+o = cli.get(f"/api/deals/{deal}/orcamento", headers=hv).get_json()
+check("some da lista do vendedor",
+      not [x for x in o["produtos_disponiveis"] if x["id"] == "p-sem-preco"])
+r = cli.post(f"/api/deals/{deal}/orcamento/itens", headers=hv,
+             json={"produto_id": "p-sem-preco", "qtd": 1, "preco_unit": 1.0})
+check("adicionar é recusado", r.status_code == 400, r.get_json())
+check("erro explica o motivo", "preço de tabela" in (r.get_json().get("error") or ""))
+check("nada foi gravado",
+      len(q("SELECT id FROM deal_itens WHERE produto_id='p-sem-preco'")) == 0)
+r = cli.post(f"/api/deals/{deal}/orcamento/itens", headers=ha,
+             json={"produto_id": "p-sem-preco", "qtd": 1, "preco_unit": 1.0})
+check("nem o admin escapa", r.status_code == 400, r.get_json())
+
+print("\n[14] 🗑 Excluir produto usado em orçamento devolve mensagem, não erro 500")
+usado = item(i4)["produto_id"]
+r = cli.delete(f"/api/produtos/{usado}", headers=ha)
+check("HTTP 400, não 500", r.status_code == 400, r.status_code)
+check("cita itens de orçamento", "orçamento" in (r.get_json().get("error") or ""), r.get_json())
+check("produto continua no catálogo", len(q("SELECT id FROM produtos WHERE id=?", (usado,))) == 1)
+r = cli.delete("/api/produtos/p-sem-preco", headers=ha)
+check("produto nunca usado ainda pode ser excluído", r.status_code == 200, r.get_json())
+check("vendedor não exclui produto",
+      cli.delete(f"/api/produtos/{usado}", headers=hv).status_code == 403)
+
 print(f"\n{'='*46}\n  {ok} passaram · {fail} falharam\n{'='*46}")
 sys.exit(1 if fail else 0)

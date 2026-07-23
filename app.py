@@ -1569,6 +1569,28 @@ def listar_liberacoes():
     return jsonify({"liberacoes": [dict(r) for r in rows], "admin": g.current_user["role"] == "admin"})
 
 
+@app.get("/api/liberacoes/pendentes")
+@login_required
+def contar_liberacoes_pendentes():
+    """🔔 Quantos pedidos de preço estão parados (v50).
+
+    Rota deliberadamente magra — uma única contagem, sem tocar no motor de
+    alertas (ao contrário de /api/dashboard/stats, que roda run_alert_engine).
+    É consultada em intervalo curto pelo menu, para o administrador não
+    descobrir tarde que há uma venda travada esperando decisão dele.
+
+    Admin conta todos os pendentes; vendedor conta apenas os próprios.
+    """
+    db = get_db()
+    if g.current_user["role"] == "admin":
+        n = db.execute("SELECT COUNT(*) c FROM liberacoes_preco WHERE status = 'pendente'").fetchone()["c"]
+    else:
+        n = db.execute("""SELECT COUNT(*) c FROM liberacoes_preco
+                          WHERE status = 'pendente' AND user_id = ?""",
+                       (g.current_user["id"],)).fetchone()["c"]
+    return jsonify({"pendentes": n})
+
+
 @app.post("/api/liberacoes/<liberacao_id>/decidir")
 @login_required
 def decidir_liberacao(liberacao_id):
@@ -1623,7 +1645,9 @@ def ver_orcamento(deal_id):
     for r in db.execute("""
         SELECT id, nome, embalagem, preco_tabela, preco_limite, desconto_valor,
                categoria, equipamento
-        FROM produtos WHERE ativo = 1 AND ofertavel != 0 ORDER BY nome
+        FROM produtos WHERE ativo = 1 AND ofertavel != 0
+          AND preco_tabela IS NOT NULL AND preco_tabela > 0   -- v50: ver _produto_sem_preco
+        ORDER BY nome
     """).fetchall():
         item = dict(r)
         item["preco_venda"] = r["preco_tabela"]   # referência = preço de tabela
@@ -1650,6 +1674,8 @@ def add_item_orcamento(deal_id):
                    (body.get("produto_id"),)).fetchone()
     if not p:
         return jsonify({"error": "Escolha um produto válido do catálogo (ativo e ofertável)."}), 400
+    if _produto_sem_preco(p):
+        return jsonify({"error": f"“{p['nome']}” não tem preço de tabela cadastrado e por isso não pode ser vendido — sem preço de tabela não existe piso, e o item passaria por qualquer valor sem liberação. Cadastre o preço em ◎ Metas → Catálogo, ou desative o produto."}), 400
     qtd = _int_or_none(body.get("qtd"))
     if not qtd or qtd < 1:
         return jsonify({"error": "Informe a quantidade (número maior que zero)."}), 400
@@ -1755,6 +1781,8 @@ def editar_item_orcamento(deal_id, item_id):
     p = db.execute("SELECT * FROM produtos WHERE id = ?", (i["produto_id"],)).fetchone()
     if not p:
         return jsonify({"error": "O produto deste item não está mais no catálogo."}), 400
+    if _produto_sem_preco(p):
+        return jsonify({"error": f"“{p['nome']}” não tem preço de tabela cadastrado, então não há piso para validar a edição. Remova o item e escolha um produto com preço, ou cadastre o preço em ◎ Metas → Catálogo."}), 400
 
     body = request.get_json(force=True, silent=True) or {}
     qtd_ant, preco_ant = i["qtd"], i["preco_unit"]
@@ -2709,6 +2737,20 @@ def toggle_produto(produto_id):
     return jsonify({"ok": True, "ativo": bool(novo)})
 
 
+def _produto_sem_preco(p):
+    """🚫 Produto sem preço de tabela não pode ser vendido (v50).
+
+    Sem preço de tabela, `_preco_piso()` devolve None e a trava de liberação
+    (`if limite and preco_unit < limite ...`) nunca dispara: o item entraria
+    aprovado por qualquer valor, sem pedido, sem selo de desconto e sem travar
+    o faturamento — invisível para o controle de margem e para o relatório
+    "Tabela vs. Limite". Aconteceu de verdade com três itens Instax criados à
+    mão antes da Base Comercial.
+    """
+    preco = p["preco_tabela"] if "preco_tabela" in p.keys() else None
+    return preco is None or preco <= 0
+
+
 def _preco_venda(p):
     """Preço de referência do produto: SEMPRE o preço de tabela importado.
     O desconto autorizado pelo admin não muda o preço — ele amplia a margem
@@ -2946,8 +2988,21 @@ def delete_produto(produto_id):
         return jsonify({"error": "Produto não encontrado."}), 404
     em_negocios = db.execute("SELECT COUNT(*) n FROM deals WHERE produto_id = ?", (produto_id,)).fetchone()["n"]
     em_metas = db.execute("SELECT COUNT(*) n FROM metas WHERE alvo_produto_id = ?", (produto_id,)).fetchone()["n"]
-    if em_negocios or em_metas:
-        return jsonify({"error": f"Este produto já foi usado em {em_negocios} negócio(s) e {em_metas} meta(s) — para preservar o histórico, ele não pode ser excluído. Use \"desativar\": ele some das opções sem afetar nada do passado."}), 400
+    # v50: deal_itens nasceu na Fase 2, depois desta checagem. Sem contá-lo, o
+    # DELETE batia na foreign key e devolvia HTTP 500 em vez da mensagem abaixo.
+    em_orcamentos = db.execute("SELECT COUNT(*) n FROM deal_itens WHERE produto_id = ?", (produto_id,)).fetchone()["n"]
+    em_liberacoes = db.execute("SELECT COUNT(*) n FROM liberacoes_preco WHERE produto_id = ?", (produto_id,)).fetchone()["n"]
+    if em_negocios or em_metas or em_orcamentos or em_liberacoes:
+        usos = []
+        if em_negocios:
+            usos.append(f"{em_negocios} negócio(s)")
+        if em_orcamentos:
+            usos.append(f"{em_orcamentos} item(ns) de orçamento")
+        if em_liberacoes:
+            usos.append(f"{em_liberacoes} liberação(ões) de preço")
+        if em_metas:
+            usos.append(f"{em_metas} meta(s)")
+        return jsonify({"error": f"Este produto já foi usado em {', '.join(usos)} — para preservar o histórico, ele não pode ser excluído. Use \"desativar\": ele some das opções sem afetar nada do passado."}), 400
     db.execute("DELETE FROM produtos WHERE id = ?", (produto_id,))
     audit("delete", "produtos", produto_id, {"nome": p["nome"]})
     db.commit()
