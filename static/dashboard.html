@@ -1793,15 +1793,23 @@ const AUDIT_CHAVE_ROTULO = {
   customer_id: "cliente", deal: "negócio", deal_id: "negócio", meta_id: "meta",
   para: "transferido para", tem_anexo: "com anexo", solicitadas: "solicitadas",
   aguardando_liberacao: "aguardando liberação",
+  decisao: "decisão", liberacao: "liberação", condicoes: "condições", acao: "ação",
+  origem: "origem", role: "papel", titulo: "título", nome: "nome", equipe: "equipe",
+  produtos_novos: "produtos novos", produtos_atualizados: "produtos atualizados",
 };
+
+// Chaves que são dinheiro: sem isto, R$ 600,00 aparecia na tela como "600".
+const AUDIT_CHAVES_MOEDA = new Set([
+  "preco", "preco_pedido", "preco_autorizado", "valor_adicional", "desconto_valor",
+]);
 
 function auditRotuloChave(k) { return AUDIT_CHAVE_ROTULO[k] || k.replace(/_/g, " "); }
 
-function auditValor(v) {
+function auditValor(v, chave) {
   if (v === true) return "sim";
   if (v === false) return "não";
   if (v === null || v === undefined) return "—";
-  if (typeof v === "number") return Number.isInteger(v) ? v : fmtPreco(v);
+  if (typeof v === "number") return AUDIT_CHAVES_MOEDA.has(chave) ? fmtPreco(v) : String(v);
   return String(v);
 }
 
@@ -1814,9 +1822,12 @@ function auditDetalhes(d) {
     frase = `<div style="color:#e8a33d;font-size:10.5px;margin-bottom:3px;">⚠ quantidade aumentada em item com preço liberado${
       d.valor_adicional ? ` — mais ${fmtPreco(d.valor_adicional)} no mesmo preço aprovado` : ""}</div>`;
   }
+  // só escondemos essas duas chaves quando a frase acima já as apresentou;
+  // fora disso elas viram chip normal, para nenhum valor sumir da tela
+  const naFrase = frase ? ["aumento_qtd_com_liberacao", "valor_adicional"] : [];
   const chips = Object.keys(d)
-    .filter(k => k !== "aumento_qtd_com_liberacao" && k !== "valor_adicional")
-    .map(k => `<span class="audit-chip">${esc(auditRotuloChave(k))}: <b>${esc(auditValor(d[k]))}</b></span>`)
+    .filter(k => !naFrase.includes(k))
+    .map(k => `<span class="audit-chip">${esc(auditRotuloChave(k))}: <b>${esc(auditValor(d[k], k))}</b></span>`)
     .join("");
   return frase + chips;
 }

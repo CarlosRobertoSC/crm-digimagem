@@ -171,7 +171,22 @@ async function suiteAuditoria() {
   check("chave desconhecida é legível",
         /chave nova: <b>1<\/b>/.test(auditDetalhes({ chave_nova: 1 })), auditDetalhes({ chave_nova: 1 }));
 
-  console.log("\n[D] Conteúdo hostil é escapado");
+  console.log("\n[D] Dinheiro aparece como dinheiro");
+  h = auditDetalhes({ preco_autorizado: 600, preco_pedido: 600.5, valor_adicional: 3600 });
+  check("valor redondo vira R$", /preço autorizado: <b>R\$ 600,00<\/b>/.test(h), h);
+  check("valor quebrado também", /preço pedido: <b>R\$ 600,50<\/b>/.test(h), h);
+  check("valor adicional em R$", /R\$ 3600,00/.test(h), h);
+  h = auditDetalhes({ qtd: 16, produtos_novos: 74 });
+  check("quantidade NÃO vira dinheiro", /quantidade: <b>16<\/b>/.test(h), h);
+  check("contagem NÃO vira dinheiro", /produtos novos: <b>74<\/b>/.test(h), h);
+
+  console.log("\n[E] Chaves acentuadas");
+  h = auditDetalhes({ decisao: "aprovar", liberacao: null, condicoes: 8 });
+  check("decisao → decisão", /decisão: <b>aprovar<\/b>/.test(h), h);
+  check("liberacao → liberação", /liberação/.test(h), h);
+  check("condicoes → condições", /condições: <b>8<\/b>/.test(h), h);
+
+  console.log("\n[F] Conteúdo hostil é escapado");
   h = auditDetalhes({ nome: '<img src=x onerror=alert(1)>' });
   check("HTML não passa cru", !/<img/.test(h), h);
   check("vira entidade escapada", /&lt;img/.test(h));
