@@ -64,8 +64,9 @@
   .rail-label{font-size:12.5px;font-weight:500;white-space:nowrap;}
   .rail-btn:hover{background:var(--surface-raised);color:var(--text-primary);}
   .rail-btn.active{background:var(--surface-raised);color:var(--urgent);}
-  /* v50: contador de liberações paradas. margin-left:auto encosta à direita
-     no menu expandido; no recolhido some junto com os rótulos. */
+  /* v50: contador de liberações paradas. margin-left:auto encosta o número à
+     direita do rótulo. O rail não tem estado "só ícones": em tela estreita ele
+     sai inteiro e volta como sobreposição (.rail.open), levando o badge junto. */
   .rail-badge{margin-left:auto;min-width:18px;height:18px;padding:0 5px;border-radius:20px;
     background:var(--urgent);color:#fff;font-size:10.5px;font-weight:700;font-family:var(--font-mono);
     display:none;align-items:center;justify-content:center;flex-shrink:0;line-height:1;}
@@ -2741,7 +2742,7 @@ function editarProduto(id) {
 async function excluirProduto(id) {
   const p = PRODUTOS_CACHE.find(x => x.id === id);
   if (!p) return;
-  if (!confirm(`Excluir o produto "${p.nome}" do catálogo?\n\nSó é possível se ele nunca foi usado em negócios ou metas.`)) return;
+  if (!confirm(`Excluir o produto "${p.nome}" do catálogo?\n\nSó é possível se ele nunca foi usado — em negócios, orçamentos, liberações de preço ou metas.\n\nSe já foi, use "desativar": ele some das opções sem afetar o histórico.`)) return;
   try {
     await api(`/produtos/${id}`, { method: "DELETE" });
     await carregarProdutos();
